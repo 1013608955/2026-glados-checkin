@@ -6,7 +6,7 @@
 功能：
 - 全自动签到
 - 精准获取当前积分 (Points)
-- PushPlus 微信推送（包含积分、剩余天数、签到结果）
+- wpush 微信推送（包含积分、剩余天数、签到结果）
 - 智能多域名切换 (优先 glados.cloud)
 - 支持 Cookie-Editor 导出格式
 """
@@ -158,14 +158,28 @@ class GLaDOS:
 
 # ================= 主程序 =================
 
-def pushplus(token, title, content):
-    if not token: return
+def wpush(apikey, title, content, channel="wechat", topic_code=""):
+    if not apikey:
+        log("❌ 未配置 WPUSH_APIKEY")
+        return
     try:
-        url = "http://www.pushplus.plus/send"
-        requests.get(url, params={'token': token, 'title': title, 'content': content, 'template': 'html'}, timeout=5)
-        log("✅ PushPlus 推送成功")
-    except:
-        log("❌ PushPlus 推送失败")
+        url = "https://api.wpush.cn/api/v1/send"
+        payload = {
+            "apikey": apikey,
+            "title": title,
+            "content": content,
+            "channel": channel
+        }
+        if topic_code:
+            payload["topic_code"] = topic_code
+        headers = {"Content-Type": "application/json"}
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            log("✅ wpush 推送成功")
+        else:
+            log(f"❌ wpush 推送失败: {resp.text}")
+    except Exception as e:
+        log(f"❌ wpush 推送异常: {e}")
 
 def main():
     log("🚀 2026 GLaDOS Checkin Starting...")
@@ -207,19 +221,13 @@ def main():
 """)
 
     # Push
-    ptoken = os.environ.get("PUSHPLUS_TOKEN")
-    if ptoken:
-        # Get first user's points for title
-        first_points = "多账户"
-        if len(cookies) == 1:
-            # Re-parse log to find points? Or just use last object
-            # Ideally store objects. Using simplified approach:
-            pass 
-        
+    apikey = os.environ.get("WPUSH_APIKEY")
+    if apikey:
         title = f"GLaDOS签到: 成功{success_cnt}/{len(cookies)}"
         content = "".join(results)
         content += f"<br><small>时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</small>"
-        pushplus(ptoken, title, content)
+        # 可根据需要修改 channel 和 topic_code
+        wpush(apikey, title, content, channel="wechat", topic_code="")
 
 if __name__ == '__main__':
     main()
