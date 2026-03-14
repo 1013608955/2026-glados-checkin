@@ -1,4 +1,4 @@
-name: GLaDOS 2026 Checkin
+name: Multi-Platform Checkin (GLaDOS + ikuuu)
 
 on:
   schedule:
@@ -32,8 +32,13 @@ jobs:
         run: python checkin.py
         timeout-minutes: 5
         env:
+          # GLaDOS 配置
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
-          WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}  # 替换为wpush的环境变量
+          # wpush 推送配置
+          WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
+          # ikuuu 配置（新增）
+          IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
+          IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
 
       - name: Retry on Failure
         if: failure()
@@ -43,5 +48,10 @@ jobs:
           python checkin.py
         timeout-minutes: 5
         env:
+          # GLaDOS 配置
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
-          WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}  # 重试步骤同步替换
+          # wpush 推送配置
+          WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
+          # ikuuu 配置（新增）
+          IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
+          IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
