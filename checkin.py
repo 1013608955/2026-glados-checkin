@@ -184,12 +184,11 @@ class GLaDOS:
         return self.checkin_msg
 
     def get_result_text(self):
-        """生成 GLaDOS 签到结果文本"""
-        return f"""
-### 🖥️ GLaDOS - {self.email}
-- 当前积分：{self.points} ({self.points_change})
-- 剩余天数：{self.left_days} 天
-- 签到结果：{self.checkin_msg}
+        """生成 GLaDOS 签到结果文本（优化格式）"""
+        return f"""### 🖥️ GLaDOS - {self.email}
+• 当前积分：{self.points} ({self.points_change})
+• 剩余天数：{self.left_days} 天
+• 签到结果：{self.checkin_msg}
 
 🎁 积分兑换：
 {self.exchange_info if self.exchange_info else '暂无兑换信息'}
@@ -249,7 +248,7 @@ def main():
     glados_cookies = get_glados_cookies()
     glados_success = 0
     if glados_cookies:
-        all_results.append("## 🖥️ GLaDOS 签到结果")
+        all_results.append("### 🖥️ GLaDOS 签到结果")
         for cookie in glados_cookies:
             g = GLaDOS(cookie)
             # 执行签到
@@ -263,15 +262,17 @@ def main():
             if "Checkin" in g.checkin_msg and "already" not in g.checkin_msg.lower():
                 glados_success += 1
     else:
-        all_results.append("## 🖥️ GLaDOS 签到结果\n未配置Cookie，跳过签到")
+        all_results.append("### 🖥️ GLaDOS 签到结果\n未配置Cookie，跳过签到")
     
-    # 2. 执行 ikuuu 签到
-    all_results.append("\n## 📶 ikuuu 签到结果")
+    # 2. 执行 ikuuu 签到（优化拼接逻辑）
+    all_results.append("\n---\n### 📶 ikuuu 签到结果")
     ikuuu_result = ikuuu_checkin()
-    all_results.append(f"- 签到结果：{ikuuu_result}")
+    all_results.append(f"• 签到结果：{ikuuu_result}")
     
     # 3. 整理推送内容
-    push_title = f"多平台签到结果 | GLaDOS成功{glados_success}/{len(glados_cookies)} | ikuuu: {ikuuu_result[:10]}..."
+    # 优化标题：精简 ikuuu 结果展示
+    ikuuu_title = ikuuu_result[:15] + "..." if len(ikuuu_result) > 15 else ikuuu_result
+    push_title = f"多平台签到结果 | GLaDOS成功{glados_success}/{len(glados_cookies)} | ikuuu: {ikuuu_title}"
     push_content = "\n".join(all_results)
     push_content += f"\n\n---\n⏰ 执行时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     
