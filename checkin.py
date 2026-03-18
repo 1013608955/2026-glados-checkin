@@ -233,12 +233,29 @@ def ikuuu_checkin():
 # ================= SMAI.AI 签到逻辑 =================
 def smai_checkin():
     session = os.environ.get('SMAI_SESSION', '')
-    user_id = os.environ.get('SMAI_USER_ID', '1207')
+    user_id = os.environ.get('SMAI_USER_ID', '')
     if not session:
         log("⚠️ 未配置 SMAI_SESSION，跳过")
         return "未配置", False
 
     def smai_req(method, path, body=None):
+        nonlocal user_id
+        # 首次请求时自动获取 user_id
+        if not user_id:
+            try:
+                resp = requests.get(f"{SMAI_API}/api/user/self",
+                    headers={'Accept': 'application/json', 'Cookie': f'session={session}',
+                             'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=10)
+                info = resp.json()
+                if info.get('success') and info.get('data', {}).get('id'):
+                    user_id = str(info['data']['id'])
+                    log(f"🔍 自动获取 SMAI User ID: {user_id}")
+                else:
+                    log("❌ 无法自动获取 SMAI User ID，请手动设置 SMAI_USER_ID")
+                    return {'success': False, 'message': '无法获取 User ID，请手动设置 Secret: SMAI_USER_ID'}
+            except Exception as e:
+                return {'success': False, 'message': f'获取 User ID 失败: {e}'}
+
         url = f"{SMAI_API}{path}"
         headers = {
             'Accept': 'application/json',

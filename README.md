@@ -60,15 +60,15 @@
 
 #### SMAI.AI 配置（可选）
 
-| Name | Value | 说明 |
-|------|-------|------|
-| `SMAI_SESSION` | `MTc3MzYwNzgw...` | 浏览器 Cookie 中的 session 值 |
-| `SMAI_USER_ID` | `1207` | 可选，默认 1207 |
+| Name | Value | 必需 | 说明 |
+|------|-------|------|------|
+| `SMAI_SESSION` | `MTc3MzYwNzgw...` | ✅ | 浏览器 Cookie 中的 session 值 |
+| `SMAI_USER_ID` | 留空即可 | ❌ | 会自动获取，一般不需要手动填 |
 
 **获取 Session 方法：**
 1. 浏览器打开 https://api.smai.ai/console/checkin 并登录
-2. 按 `F12` → **Network** → 刷新页面
-3. 点任意请求 → Headers → Cookie → 复制 `session=` 后面的全部内容
+2. 按 `F12` → **Network（网络）** → 刷新页面
+3. 点任意请求 → **Headers** → 找到 **Cookie** → 复制 `session=` 后面的全部内容
 
 #### 微信推送配置（可选）
 
