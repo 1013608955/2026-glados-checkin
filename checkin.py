@@ -157,7 +157,8 @@ class GLaDOS:
         r = self.req('POST', '/api/user/checkin', {'token': 'glados.cloud'})
         if r:
             self.checkin_msg = r.get('message', '签到失败')
-            self.success = "Checkin" in self.checkin_msg and "already" not in self.checkin_msg.lower()
+            # 优化点1：GLaDOS 已签到也判定为成功
+            self.success = "Checkin" in self.checkin_msg or "already" in self.checkin_msg.lower()
         else:
             self.checkin_msg = "网络错误"
 
@@ -190,9 +191,13 @@ def ikuuu_one(email, pwd):
     try:
         r = s.post('https://ikuuu.nl/auth/login', headers=h, data={'email': email, 'passwd': pwd}, timeout=10).json()
         log(f"  ikuuu 登录 [{email}]: {r['msg']}")
+        # 登录失败直接返回
+        if r['msg'] != '登录成功':
+            return r['msg'], False
         c = s.post('https://ikuuu.nl/user/checkin', headers=h, timeout=10).json()
         log(f"  ikuuu 签到 [{email}]: {c['msg']}")
-        ok = "成功" in c['msg'] or "获得" in c['msg']
+        # 优化点2：ikuuu 已签到也判定为成功
+        ok = "成功" in c['msg'] or "获得" in c['msg'] or "已经签到" in c['msg'] or "似乎已经签到过了" in c['msg']
         return c['msg'], ok
     except Exception as e:
         return str(e), False
@@ -252,6 +257,7 @@ def smai_one(session, uid_hint=''):
         result = json.loads(r.stdout.decode('utf-8', errors='replace'))
         if result.get('success'): return "签到成功", True
         msg = result.get('message', '签到失败')
+        # 优化点3：SMAI 已签到也判定为成功（原有逻辑已包含，此处明确注释）
         return msg, "已签到" in msg
     except Exception as e:
         return str(e), False
