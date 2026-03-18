@@ -52,15 +52,17 @@
 
 #### SMAI.AI（可选）
 
-| Secret 名称 | 值 | 说明 |
-|---|---|---|
-| `SMAI_SESSION` | `MTc3MzYwNzgw...` | 浏览器 session 值 |
-| `SMAI_USER_ID` | 留空即可 | 会自动获取，一般不用填 |
+| Secret 名称 | 值 | 必填 | 说明 |
+|---|---|---|---|
+| `SMAI_SESSION` | `MTc3MzYw...` | ✅ | 浏览器 session 值 |
+| `SMAI_USER_ID` | `1207` | ✅ | 你的用户 ID（数字） |
 
 **获取方法：**
 1. 登录 https://api.smai.ai/console/checkin
-2. 按 `F12` → **Network** → 刷新页面
-3. 点任意请求 → Headers → Cookie → 复制 `session=` 后面的全部内容
+2. 按 `F12` → **Network（网络）** → 刷新页面
+3. 随便点一个 `/api/` 开头的请求
+4. 在 **Request Headers** 里找到 `New-Api-User`，后面的数字就是你的 User ID
+5. 同一请求的 **Cookie** 里复制 `session=` 后面的值
 
 #### 微信推送（可选）
 

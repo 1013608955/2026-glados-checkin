@@ -185,50 +185,59 @@ def ikuuu_one(email, pwd):
 
 # ================= SMAI =================
 def smai_one(session, uid_hint=''):
-    def smai_api(method, path, uid):
-        h = {
-            'Accept': 'application/json', 'New-Api-User': uid,
-            'Cookie': f'session={session}', 'User-Agent': COMMON_HEADERS['User-Agent'],
-            'Referer': f'{SMAI_API}/console/checkin', 'Origin': SMAI_API
-        }
-        if method == 'POST': h['Content-Type'] = 'application/json'
-        try:
-            r = requests.request(method, f'{SMAI_API}{path}', headers=h,
-                json={} if method == 'POST' else None, timeout=15, verify=False)
-            return r.json()
-        except Exception as e:
-            return {'success': False, 'message': str(e)}
-
+    """单个 SMAI 账号签到 - 使用 curl 绕过 Python SSL 问题"""
     try:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        import subprocess
 
+        # 确定 user_id
         uid = uid_hint
         if not uid:
-            try:
-                # /api/user/self 也需要 New-Api-User 头，先用占位值
-                r = requests.get(f'{SMAI_API}/api/user/self',
-                    headers={'Accept': 'application/json', 'New-Api-User': '0',
-                             'Cookie': f'session={session}',
-                             'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=15, verify=False)
-                info = r.json()
-                if info.get('success') and info.get('data', {}).get('id'):
-                    uid = str(info['data']['id'])
-                    log(f"  SMAI 用户: {info['data'].get('username', uid)} (ID: {uid})")
-                else:
-                    msg = info.get('message', '未知错误')
-                    log(f"  SMAI 获取用户信息失败: {msg}")
-                    return msg, False
-            except Exception as e:
-                log(f"  SMAI 获取用户信息异常: {e}")
-                return f"网络异常: {e}", False
+            # 用 curl 获取用户信息
+            r = subprocess.run([
+                'curl', '-s', '--max-time', '15',
+                f'{SMAI_API}/api/user/self',
+                '-H', 'Accept: application/json',
+                '-H', f'Cookie: session={session}',
+                '-H', 'User-Agent: Mozilla/5.0'
+            ], capture_output=True, timeout=20)
+            info = json.loads(r.stdout.decode('utf-8', errors='replace'))
+            if info.get('success') and info.get('data', {}).get('id'):
+                uid = str(info['data']['id'])
+                log(f"  SMAI 用户: {info['data'].get('username', uid)} (ID: {uid})")
+            else:
+                msg = info.get('message', '未知错误')
+                log(f"  SMAI 获取用户信息失败: {msg}")
+                log(f"  💡 请在 GitHub Secrets 中添加 SMAI_USER_ID (你的用户ID)")
+                return msg, False
 
-        stats = smai_api('GET', f'/api/user/checkin?year={datetime.now().year}', uid)
+        # 查询签到状态
+        r = subprocess.run([
+            'curl', '-s', '--max-time', '15',
+            f'{SMAI_API}/api/user/checkin?year={datetime.now().year}',
+            '-H', 'Accept: application/json',
+            '-H', f'New-Api-User: {uid}',
+            '-H', f'Cookie: session={session}',
+            '-H', 'User-Agent: Mozilla/5.0'
+        ], capture_output=True, timeout=20)
+        stats = json.loads(r.stdout.decode('utf-8', errors='replace'))
         if stats.get('success') and stats.get('data', {}).get('checked_in_today'):
             return "今日已签到", True
-        r = smai_api('POST', '/api/user/checkin', uid)
-        if r.get('success'): return "签到成功", True
-        msg = r.get('message', '签到失败')
+
+        # 执行签到
+        r = subprocess.run([
+            'curl', '-s', '--max-time', '15', '-X', 'POST',
+            f'{SMAI_API}/api/user/checkin',
+            '-H', 'Accept: application/json',
+            '-H', 'Content-Type: application/json',
+            '-H', f'New-Api-User: {uid}',
+            '-H', f'Cookie: session={session}',
+            '-H', 'User-Agent: Mozilla/5.0',
+            '-H', f'Origin: {SMAI_API}',
+            '-d', '{}'
+        ], capture_output=True, timeout=20)
+        result = json.loads(r.stdout.decode('utf-8', errors='replace'))
+        if result.get('success'): return "签到成功", True
+        msg = result.get('message', '签到失败')
         return msg, "已签到" in msg
     except Exception as e:
         return str(e), False
