@@ -207,59 +207,75 @@ class GLaDOS:
         )
 
 # ================= ikuuu 签到逻辑 =================
-def ikuuu_checkin():
-    email = os.environ.get('IKUUU_EMAIL', '')
-    passwd = os.environ.get('IKUUU_PASSWORD', '')
-    if not email or not passwd:
-        log("⚠️ 未配置 IKUUU，跳过")
-        return "未配置", False
+def get_ikuuu_accounts():
+    """获取 ikuuu 账号列表，支持多账号（用 & 分隔 email:password）"""
+    # 新格式：IKUUU_ACCOUNTS = email1:password1&email2:password2
+    accounts_raw = os.environ.get('IKUUU_ACCOUNTS', '')
+    if accounts_raw:
+        accounts = []
+        for item in accounts_raw.split('&'):
+            item = item.strip()
+            if ':' in item:
+                email, pwd = item.split(':', 1)
+                accounts.append((email.strip(), pwd.strip()))
+        return accounts
 
+    # 兼容旧格式：单账号
+    email = os.environ.get('IKUUU_EMAIL', '')
+    pwd = os.environ.get('IKUUU_PASSWORD', '')
+    if email and pwd:
+        return [(email, pwd)]
+    return []
+
+def ikuuu_checkin_one(email, passwd):
+    """单个 ikuuu 账号签到"""
     session = requests.session()
     header = {'origin': 'https://ikuuu.nl', 'user-agent': COMMON_HEADERS['User-Agent']}
     try:
-        log('🔑 ikuuu 登录中...')
         resp = session.post('https://ikuuu.nl/auth/login',
                            headers=header, data={'email': email, 'passwd': passwd}, timeout=10)
         login_res = resp.json()
-        log(f"ikuuu 登录: {login_res['msg']}")
+        log(f"  ikuuu 登录 [{email}]: {login_res['msg']}")
         checkin_res = session.post('https://ikuuu.nl/user/checkin', headers=header, timeout=10).json()
-        log(f"ikuuu 签到: {checkin_res['msg']}")
+        log(f"  ikuuu 签到 [{email}]: {checkin_res['msg']}")
         success = "成功" in checkin_res['msg'] or "获得" in checkin_res['msg']
         return checkin_res['msg'], success
     except Exception as e:
-        log(f"❌ ikuuu 异常: {e}")
+        log(f"❌ ikuuu [{email}] 异常: {e}")
         return str(e), False
 
-# ================= SMAI.AI 签到逻辑 =================
-def smai_checkin():
-    session = os.environ.get('SMAI_SESSION', '')
-    user_id = os.environ.get('SMAI_USER_ID', '')
-    if not session:
-        log("⚠️ 未配置 SMAI_SESSION，跳过")
+def ikuuu_checkin():
+    """执行 ikuuu 签到（支持多账号）"""
+    accounts = get_ikuuu_accounts()
+    if not accounts:
+        log("⚠️ 未配置 IKUUU，跳过")
         return "未配置", False
 
-    def smai_req(method, path, body=None):
-        nonlocal user_id
-        # 首次请求时自动获取 user_id
-        if not user_id:
-            try:
-                resp = requests.get(f"{SMAI_API}/api/user/self",
-                    headers={'Accept': 'application/json', 'Cookie': f'session={session}',
-                             'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=10)
-                info = resp.json()
-                if info.get('success') and info.get('data', {}).get('id'):
-                    user_id = str(info['data']['id'])
-                    log(f"🔍 自动获取 SMAI User ID: {user_id}")
-                else:
-                    log("❌ 无法自动获取 SMAI User ID，请手动设置 SMAI_USER_ID")
-                    return {'success': False, 'message': '无法获取 User ID，请手动设置 Secret: SMAI_USER_ID'}
-            except Exception as e:
-                return {'success': False, 'message': f'获取 User ID 失败: {e}'}
+    results = []
+    all_ok = True
+    for email, pwd in accounts:
+        msg, ok = ikuuu_checkin_one(email, pwd)
+        results.append(f"{email}: {msg}")
+        if not ok:
+            all_ok = False
+    return " | ".join(results), all_ok
 
+# ================= SMAI.AI 签到逻辑 =================
+def get_smai_sessions():
+    """获取 SMAI session 列表，支持多账号（用 & 分隔）"""
+    raw = os.environ.get('SMAI_SESSION', '')
+    if not raw:
+        return []
+    sep = '\n' if '\n' in raw else '&'
+    return [s.strip() for s in raw.split(sep) if s.strip()]
+
+def smai_checkin_one(session, user_id_hint=''):
+    """单个 SMAI 账号签到"""
+    def smai_req(method, path, body=None, uid=None):
         url = f"{SMAI_API}{path}"
         headers = {
             'Accept': 'application/json',
-            'New-Api-User': user_id,
+            'New-Api-User': uid or user_id_hint,
             'Cookie': f'session={session}',
             'User-Agent': COMMON_HEADERS['User-Agent'],
             'Referer': f'{SMAI_API}/console/checkin',
@@ -277,26 +293,56 @@ def smai_checkin():
             return {'success': False, 'message': str(e)}
 
     try:
-        # 先查状态
+        # 自动获取 user_id
+        uid = user_id_hint
+        if not uid:
+            try:
+                resp = requests.get(f"{SMAI_API}/api/user/self",
+                    headers={'Accept': 'application/json', 'Cookie': f'session={session}',
+                             'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=10)
+                info = resp.json()
+                if info.get('success') and info.get('data', {}).get('id'):
+                    uid = str(info['data']['id'])
+                    username = info['data'].get('username', uid)
+                    log(f"  SMAI 账号: {username} (ID: {uid})")
+            except:
+                return "无法获取 User ID", False
+
+        # 查询状态
         year = datetime.now().year
-        stats = smai_req('GET', f'/api/user/checkin?year={year}')
+        stats = smai_req('GET', f'/api/user/checkin?year={year}', uid=uid)
         if stats.get('success') and stats.get('data', {}).get('checked_in_today'):
-            log("✅ SMAI 今天已签到")
             return "今日已签到", True
 
         # 执行签到
-        log('📝 SMAI 签到中...')
-        result = smai_req('POST', '/api/user/checkin')
+        result = smai_req('POST', '/api/user/checkin', uid=uid)
         if result.get('success'):
-            log("✅ SMAI 签到成功")
             return "签到成功", True
         else:
             msg = result.get('message', '签到失败')
-            log(f"⚠️ SMAI: {msg}")
             return msg, "已签到" in msg
     except Exception as e:
-        log(f"❌ SMAI 异常: {e}")
         return str(e), False
+
+def smai_checkin():
+    """执行 SMAI.AI 签到（支持多账号）"""
+    sessions = get_smai_sessions()
+    if not sessions:
+        log("⚠️ 未配置 SMAI_SESSION，跳过")
+        return "未配置", False
+
+    user_id_hint = os.environ.get('SMAI_USER_ID', '')
+    results = []
+    all_ok = True
+    for sess in sessions:
+        # 只显示前20字符作为标识
+        sess_short = sess[:20] + "..."
+        log(f"📝 SMAI 签到中... (session: {sess_short})")
+        msg, ok = smai_checkin_one(sess, user_id_hint)
+        results.append(msg)
+        if not ok:
+            all_ok = False
+    return " | ".join(results), all_ok
 
 # ================= 主程序 =================
 def main():

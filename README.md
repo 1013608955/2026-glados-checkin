@@ -156,12 +156,17 @@ GitHub Actions 定时任务对新仓库可能不触发。推荐使用免费的 c
 </details>
 
 <details>
-<summary><b>Q: 支持多个 GLaDOS 账号吗？</b></summary>
+<summary><b>Q: 支持多账号吗？</b></summary>
 
-支持！用 `&` 分隔多个 Cookie：
-```
-cookie1&cookie2&cookie3
-```
+所有平台均支持多账号，用 `&` 分隔：
+
+| 平台 | Secret | 格式 |
+|------|--------|------|
+| GLaDOS | `GLADOS_COOKIE` | `cookie1&cookie2` |
+| ikuuu | `IKUUU_ACCOUNTS` | `email1:password1&email2:password2` |
+| SMAI.AI | `SMAI_SESSION` | `session1&session2` |
+
+ikuuu 旧格式 `IKUUU_EMAIL` + `IKUUU_PASSWORD` 仍然有效。
 
 </details>
 
