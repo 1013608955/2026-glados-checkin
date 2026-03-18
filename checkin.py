@@ -13,7 +13,7 @@ import requests
 import json
 import os
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta  # 新增：导入 timedelta
 
 if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -30,7 +30,9 @@ STATE_FILE = os.environ.get("CHECKIN_STATE_FILE", ".checkin_state.json")
 
 # ================= 工具函数 =================
 def log(msg):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+    # 修改：使用北京时间打印日志
+    beijing_time = datetime.now() + timedelta(hours=8)
+    print(f"[{beijing_time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 def extract_cookie(raw):
     if not raw: return None
@@ -76,14 +78,18 @@ def load_state():
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-                if state.get('date') == str(date.today()):
+                # 修改：用北京时间判断日期
+                beijing_date = (datetime.now() + timedelta(hours=8)).date()
+                if state.get('date') == str(beijing_date):
                     # 清洗旧格式：morning 下所有 value 必须是 dict
                     for k, v in state.get('morning', {}).items():
                         if not isinstance(v, dict):
                             state['morning'][k] = {}
                     return state
     except: pass
-    return {'date': str(date.today()), 'morning': {}}
+    # 修改：用北京时间初始化日期
+    beijing_date = (datetime.now() + timedelta(hours=8)).date()
+    return {'date': str(beijing_date), 'morning': {}}
 
 def save_state(state):
     try:
@@ -232,7 +238,7 @@ def smai_one(session, uid_hint=''):
         # 查询签到状态
         r = subprocess.run([
             'curl', '-s', '--max-time', '15',
-            f'{SMAI_API}/api/user/checkin?year={datetime.now().year}',
+            f'{SMAI_API}/api/user/checkin?year={(datetime.now() + timedelta(hours=8)).year}',  # 修改：用北京时间的年份
             '-H', 'Accept: application/json',
             '-H', f'New-Api-User: {uid}',
             '-H', f'Cookie: session={session}',
@@ -264,12 +270,13 @@ def smai_one(session, uid_hint=''):
 
 # ================= 主程序 =================
 def main():
-    now = datetime.now()
-    is_morning = now.hour < 15
+    # 修改：获取北京时间，替代本地时间
+    beijing_time = datetime.now() + timedelta(hours=8)
+    is_morning = beijing_time.hour < 15  # 北京时间 0-15 点为上午，15-24 点为下午
 
     log("=" * 50)
     log(f"🚀 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)")
-    log(f"⏰ {now.strftime('%Y-%m-%d %H:%M:%S')} {'(上午)' if is_morning else '(下午)'}")
+    log(f"⏰ {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} {'(上午)' if is_morning else '(下午)'}")
     log("=" * 50)
 
     state = load_state()
@@ -370,7 +377,7 @@ def main():
     body = ""
     if expired:
         body += "⚠️ **Token 过期警告**\n" + "\n".join(f"  🔴 {w}" for w in expired) + "\n  👉 请更新对应 Secret\n\n"
-    body += "\n".join(results) + f"\n\n---\n{summary}\n⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    body += "\n".join(results) + f"\n\n---\n{summary}\n⏰ {beijing_time.strftime('%Y-%m-%d %H:%M:%S')}"  # 修改：用北京时间
 
     prefix = "⚠️ " if expired else ""
     title = f"{prefix}多平台签到 {total_done}/{total_all}"
