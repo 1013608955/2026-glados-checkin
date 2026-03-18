@@ -158,7 +158,7 @@ class GLaDOS:
         if r:
             self.checkin_msg = r.get('message', '签到失败')
             # 优化点1：GLaDOS 已签到也判定为成功
-            self.success = "Checkin" in self.checkin_msg or "already" in self.checkin_msg.lower()
+            self.success = "Checkin" in self.checkin_msg or "already" in self.checkin_msg.lower() or "logged" in self.checkin_msg.lower() or "points" in self.checkin_msg.lower()
         else:
             self.checkin_msg = "网络错误"
 
