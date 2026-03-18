@@ -199,15 +199,23 @@ def smai_one(session, uid_hint=''):
             return {'success': False, 'message': str(e)}
     try:
         uid = uid_hint
+        # 必须先获取 user_id
         if not uid:
             try:
                 r = requests.get(f'{SMAI_API}/api/user/self',
-                    headers={'Accept': 'application/json', 'Cookie': f'session={session}', 'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=10)
+                    headers={'Accept': 'application/json', 'Cookie': f'session={session}',
+                             'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=10)
                 info = r.json()
                 if info.get('success') and info.get('data', {}).get('id'):
                     uid = str(info['data']['id'])
                     log(f"  SMAI 用户: {info['data'].get('username', uid)} (ID: {uid})")
-            except: return "无法获取 User ID", False
+                else:
+                    log(f"  SMAI 获取用户信息失败: {info.get('message', '未知错误')}")
+                    return info.get('message', '获取用户信息失败，请检查 session 是否有效'), False
+            except Exception as e:
+                log(f"  SMAI 获取用户信息异常: {e}")
+                return f"获取用户信息失败: {e}", False
+
         stats = smai_api('GET', f'/api/user/checkin?year={datetime.now().year}', uid)
         if stats.get('success') and stats.get('data', {}).get('checked_in_today'):
             return "今日已签到", True
