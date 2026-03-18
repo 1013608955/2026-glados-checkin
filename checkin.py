@@ -210,14 +210,14 @@ def ikuuu_one(email, pwd):
 
 # ================= SMAI =================
 def smai_one(session, uid_hint=''):
-    """单个 SMAI 账号签到 - 使用 curl 绕过 Python SSL 问题"""
+    """单个 SMAI 账号签到 - 返回详细信息"""
     try:
         import subprocess
 
         # 确定 user_id
         uid = uid_hint
+        username = uid_hint or '未知'
         if not uid:
-            # 用 curl 获取用户信息
             r = subprocess.run([
                 'curl', '-s', '--max-time', '15',
                 f'{SMAI_API}/api/user/self',
@@ -228,17 +228,18 @@ def smai_one(session, uid_hint=''):
             info = json.loads(r.stdout.decode('utf-8', errors='replace'))
             if info.get('success') and info.get('data', {}).get('id'):
                 uid = str(info['data']['id'])
-                log(f"  SMAI 用户: {info['data'].get('username', uid)} (ID: {uid})")
+                username = info['data'].get('username', uid)
+                log(f"  SMAI 用户: {username} (ID: {uid})")
             else:
                 msg = info.get('message', '未知错误')
                 log(f"  SMAI 获取用户信息失败: {msg}")
                 log(f"  💡 请在 GitHub Secrets 中添加 SMAI_USER_ID (你的用户ID)")
-                return msg, False
+                return msg, False, {}
 
         # 查询签到状态
         r = subprocess.run([
             'curl', '-s', '--max-time', '15',
-            f'{SMAI_API}/api/user/checkin?year={(datetime.now() + timedelta(hours=8)).year}',  # 修改：用北京时间的年份
+            f'{SMAI_API}/api/user/checkin?year={(datetime.now() + timedelta(hours=8)).year}',
             '-H', 'Accept: application/json',
             '-H', f'New-Api-User: {uid}',
             '-H', f'Cookie: session={session}',
@@ -246,7 +247,7 @@ def smai_one(session, uid_hint=''):
         ], capture_output=True, timeout=20)
         stats = json.loads(r.stdout.decode('utf-8', errors='replace'))
         if stats.get('success') and stats.get('data', {}).get('checked_in_today'):
-            return "今日已签到", True
+            return "今日已签到", True, {'username': username}
 
         # 执行签到
         r = subprocess.run([
@@ -261,12 +262,49 @@ def smai_one(session, uid_hint=''):
             '-d', '{}'
         ], capture_output=True, timeout=20)
         result = json.loads(r.stdout.decode('utf-8', errors='replace'))
-        if result.get('success'): return "签到成功", True
+
+        detail = {'username': username}
+
+        if result.get('success'):
+            # 提取签到详情
+            data = result.get('data', {})
+            earned_kb = data.get('quota_awarded', 0)  # 本次获得的点数
+
+            # 查询最新统计
+            r2 = subprocess.run([
+                'curl', '-s', '--max-time', '15',
+                f'{SMAI_API}/api/user/checkin?year={(datetime.now() + timedelta(hours=8)).year}',
+                '-H', 'Accept: application/json',
+                '-H', f'New-Api-User: {uid}',
+                '-H', f'Cookie: session={session}',
+                '-H', 'User-Agent: Mozilla/5.0'
+            ], capture_output=True, timeout=20)
+            stats2 = json.loads(r2.stdout.decode('utf-8', errors='replace'))
+            st = stats2.get('data', {}).get('stats', {})
+            total_days = st.get('total_checkins', '?')
+            total_quota_kb = st.get('total_quota', 0)
+
+            # 格式化点数 (KB -> 可读)
+            def fmt_quota(kb):
+                if kb is None: return '?'
+                try: kb = float(kb)
+                except: return str(kb)
+                if kb >= 1048576: return f"{kb/1048576:.2f} GB"
+                if kb >= 1024: return f"{kb/1024:.2f} MB"
+                return f"{kb:.0f} KB"
+
+            earned_str = fmt_quota(earned_kb)
+            total_str = fmt_quota(total_quota_kb)
+            msg = f"签到成功 +{earned_str}，累计 {total_str}，共 {total_days} 天"
+            detail['earned'] = earned_kb
+            detail['total_days'] = total_days
+            detail['total_quota'] = total_quota_kb
+            return msg, True, detail
+
         msg = result.get('message', '签到失败')
-        # 优化点3：SMAI 已签到也判定为成功（原有逻辑已包含，此处明确注释）
-        return msg, "已签到" in msg
+        return msg, "已签到" in msg, detail
     except Exception as e:
-        return str(e), False
+        return str(e), False, {}
 
 # ================= 主程序 =================
 def main():
@@ -344,22 +382,25 @@ def main():
     smai_user_ids = get_smai_user_ids()
     s_success = 0; s_total = len(smai_sessions)
     if smai_sessions:
-        msgs = []
         for i, sess in enumerate(smai_sessions):
             key = sess[:20] + "..."
             uid = smai_user_ids[i] if i < len(smai_user_ids) else ''
             if is_skipped(state, 'smai', key, is_morning):
-                msgs.append("上午已签，跳过")
+                results.append(f"• {uid or '账号'+str(i+1)}: 上午已签，跳过")
                 s_success += 1
             else:
                 log(f"  SMAI 签到... ({key})")
-                msg, ok = smai_one(sess, uid)
-                msgs.append(msg)
+                msg, ok, detail = smai_one(sess, uid)
+                uname = detail.get('username', uid or f'账号{i+1}')
                 if ok:
                     record_success(state, 'smai', key)
                     s_success += 1
-                elif is_expired('smai', msg): expired.append(f"✅ SMAI [{key}] Session 可能过期")
-        results.append(f"• 结果：{' | '.join(msgs)}")
+                    results.append(f"• {uname}: {msg}")
+                elif is_expired('smai', msg):
+                    expired.append(f"✅ SMAI [{key}] Session 可能过期")
+                    results.append(f"• {uname}: {msg}")
+                else:
+                    results.append(f"• {uname}: {msg}")
     else:
         results.append("• 未配置，跳过")
 
