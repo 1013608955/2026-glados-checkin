@@ -2,13 +2,13 @@ name: Multi-Platform Checkin (GLaDOS + ikuuu + SMAI)
 
 on:
   schedule:
-    # 北京时间 9:30 (UTC 1:30)
+    # 北京时间 9:30 (UTC 1:30) - 上午签到
     - cron: '30 1 * * *'
-    # 北京时间 21:30 (UTC 13:30)
+    # 北京时间 21:30 (UTC 13:30) - 下午签到
     - cron: '30 13 * * *'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
   push:
-    branches: [main]  # 推送时也触发，保持活跃
+    branches: [main]
 
 jobs:
   checkin:
@@ -25,37 +25,45 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Python Dependencies
+      - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      - name: Run GLaDOS + ikuuu Checkin
-        run: python checkin.py
-        timeout-minutes: 5
+      - name: Restore Checkin State
+        uses: actions/cache@v4
+        with:
+          path: .checkin_state.json
+          key: checkin-state-${{ github.run_id }}
+          restore-keys: |
+            checkin-state-
+
+      - name: Run All Platforms Checkin
+        id: checkin
+        run: python checkin.py 2>&1 | tee checkin_output.txt
+        timeout-minutes: 8
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
           WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
           IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
           IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
-
-      - name: Run SMAI.AI Checkin
-        run: node smai_checkin.js
-        timeout-minutes: 3
-        env:
           SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
           SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
+
+      - name: Check Skip Afternoon
+        id: skip_check
+        run: |
+          if grep -q "SKIP_AFTERNOON=true" checkin_output.txt; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "🎉 上午全部成功，下午已跳过"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Retry on Failure
         if: failure()
         run: |
-          echo "First attempt failed, retrying in 60s..."
+          echo "首次失败，60秒后重试..."
           sleep 60
           python checkin.py
-          node smai_checkin.js
         timeout-minutes: 5
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
