@@ -242,7 +242,7 @@ def smai_checkin():
         url = f"{SMAI_API}{path}"
         headers = {
             'Accept': 'application/json',
-            'new-api-user': user_id,
+            'New-Api-User': user_id,
             'Cookie': f'session={session}',
             'User-Agent': COMMON_HEADERS['User-Agent'],
             'Referer': f'{SMAI_API}/console/checkin',
