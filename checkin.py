@@ -344,21 +344,37 @@ def smai_checkin():
             all_ok = False
     return " | ".join(results), all_ok
 
+# ================= Token 过期检测 =================
+# 各平台认证失败关键词
+TOKEN_EXPIRED_KEYWORDS = {
+    'glados': ['Unauthorized', 'login', '请重新登录', 'authentication', '未登录', 'invalid token', '401'],
+    'ikuuu': ['密码错误', '用户不存在', '登录失败', '认证失败', 'unauthorized', '401', '邮箱或密码错误'],
+    'smai': ['未登录', '无权', 'unauthorized', '401', 'token', 'expired', '过期', '请重新', '未提供'],
+}
+
+def is_token_expired(platform, msg):
+    """检测消息是否表示 token/session 过期"""
+    if not msg or msg == '未配置':
+        return False
+    msg_lower = msg.lower()
+    for keyword in TOKEN_EXPIRED_KEYWORDS.get(platform, []):
+        if keyword.lower() in msg_lower:
+            return True
+    return False
+
 # ================= 主程序 =================
 def main():
     now = datetime.now()
     hour = now.hour
-    is_morning = hour < 15  # 15点(下午3点)前算上午
+    is_morning = hour < 15
 
     log("=" * 50)
     log(f"🚀 多平台自动签到启动 (GLaDOS + ikuuu + SMAI.AI)")
     log(f"⏰ 当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')} {'(上午)' if is_morning else '(下午)'}")
     log("=" * 50)
 
-    # 加载状态
     state = load_state()
 
-    # 下午检查：是否需要跳过
     if not is_morning:
         if should_skip_afternoon(state):
             log("🎉 上午全部签到成功，下午跳过签到+推送！")
@@ -368,7 +384,8 @@ def main():
             log("📋 上午有未完成的平台，继续下午签到")
 
     all_results = []
-    platforms_status = {}  # 记录各平台状态
+    platforms_status = {}
+    expired_warnings = []  # 收集 token 过期警告
 
     # ========== 1. GLaDOS 签到 ==========
     glados_cookies = get_glados_cookies()
@@ -377,7 +394,7 @@ def main():
 
     if glados_cookies:
         all_results.append("### 🖥️ GLaDOS 签到结果")
-        for cookie in glados_cookies:
+        for i, cookie in enumerate(glados_cookies):
             g = GLaDOS(cookie)
             g.checkin()
             g.get_status()
@@ -385,6 +402,10 @@ def main():
             all_results.append(g.get_result_text())
             if g.success:
                 glados_success += 1
+            # 检测 token 过期
+            elif is_token_expired('glados', g.checkin_msg):
+                account = g.email if g.email != "未知账号" else f"账号{i+1}"
+                expired_warnings.append(f"🖥️ GLaDOS [{account}] Cookie 可能已过期")
     else:
         all_results.append("### 🖥️ GLaDOS 签到结果\n未配置Cookie，跳过签到")
 
@@ -392,30 +413,53 @@ def main():
 
     # ========== 2. ikuuu 签到 ==========
     all_results.append("\n---\n### 📶 ikuuu 签到结果")
+    ikuuu_accounts = get_ikuuu_accounts()
     ikuuu_msg, ikuuu_ok = ikuuu_checkin()
     all_results.append(f"• 签到结果：{ikuuu_msg}")
+    if not ikuuu_ok and ikuuu_accounts:
+        for email, _ in ikuuu_accounts:
+            if email in ikuuu_msg or is_token_expired('ikuuu', ikuuu_msg):
+                expired_warnings.append(f"📶 ikuuu [{email}] 账号密码可能失效")
+                break
+        if not ikuuu_ok and '未配置' not in ikuuu_msg:
+            expired_warnings.append(f"📶 ikuuu 账号可能失效，请检查")
     platforms_status['ikuuu'] = 'success' if ikuuu_ok else ('skip' if '未配置' in ikuuu_msg else 'fail')
 
     # ========== 3. SMAI.AI 签到 ==========
     all_results.append("\n---\n### ✅ SMAI.AI 签到结果")
+    smai_sessions = get_smai_sessions()
     smai_msg, smai_ok = smai_checkin()
     all_results.append(f"• 签到结果：{smai_msg}")
+    if not smai_ok and '未配置' not in smai_msg:
+        if is_token_expired('smai', smai_msg):
+            expired_warnings.append(f"✅ SMAI.AI Session 可能已过期，请更新")
     platforms_status['smai'] = 'success' if smai_ok else ('skip' if '未配置' in smai_msg else 'fail')
 
     # ========== 更新状态 ==========
     state['morning'] = platforms_status
-    # 检查是否所有平台都成功
     active_platforms = [k for k, v in platforms_status.items() if v != 'skip']
     if active_platforms and all(platforms_status.get(p) == 'success' for p in active_platforms):
         state['skip_afternoon'] = True
         log("🎉 所有平台签到成功！下午将跳过签到+推送")
     save_state(state)
 
-    # ========== 推送结果 ==========
-    ikuuu_short = ikuuu_msg[:15] + "..." if len(ikuuu_msg) > 15 else ikuuu_msg
-    push_title = f"多平台签到 | GLaDOS {glados_success}/{glados_total} | ikuuu: {ikuuu_short} | SMAI: {smai_msg[:10]}"
-    push_content = "\n".join(all_results)
+    # ========== 组装推送内容 ==========
+    push_content = ""
+
+    # ⚠️ Token 过期警告（放在最前面）
+    if expired_warnings:
+        push_content += "⚠️ **Token 过期警告**\n"
+        for w in expired_warnings:
+            push_content += f"  🔴 {w}\n"
+        push_content += "  👉 请更新对应平台的 Secret\n\n"
+
+    push_content += "\n".join(all_results)
     push_content += f"\n\n---\n⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}"
+
+    # 推送标题带警告标识
+    warning_prefix = "⚠️ " if expired_warnings else ""
+    ikuuu_short = ikuuu_msg[:15] + "..." if len(ikuuu_msg) > 15 else ikuuu_msg
+    push_title = f"{warning_prefix}多平台签到 | GLaDOS {glados_success}/{glados_total} | ikuuu: {ikuuu_short} | SMAI: {smai_msg[:10]}"
 
     wpush_apikey = os.environ.get("WPUSH_APIKEY")
     if wpush_apikey:
@@ -428,7 +472,9 @@ def main():
     log(push_content)
     log("=" * 50)
 
-    # 输出状态供 GitHub Actions 判断
+    if expired_warnings:
+        log(f"\n🔴 发现 {len(expired_warnings)} 个 token 可能过期！")
+
     if state.get('skip_afternoon'):
         log("⏭️ 下次运行(下午)将自动跳过")
 
