@@ -65,13 +65,23 @@ def get_smai_sessions():
     if not raw: return []
     return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
 
+def get_smai_user_ids():
+    raw = os.environ.get('SMAI_USER_ID', '')
+    if not raw: return []
+    return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
+
 # ================= 状态管理 =================
 def load_state():
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-                if state.get('date') == str(date.today()): return state
+                if state.get('date') == str(date.today()):
+                    # 清洗旧格式：morning 下所有 value 必须是 dict
+                    for k, v in state.get('morning', {}).items():
+                        if not isinstance(v, dict):
+                            state['morning'][k] = {}
+                    return state
     except: pass
     return {'date': str(date.today()), 'morning': {}}
 
@@ -84,11 +94,15 @@ def save_state(state):
         log(f"⚠️ 保存失败: {e}")
 
 def record_success(state, platform, key):
-    state.setdefault('morning', {}).setdefault(platform, {})[key] = 'success'
+    morning = state.setdefault('morning', {})
+    if not isinstance(morning.get(platform), dict):
+        morning[platform] = {}
+    morning[platform][key] = 'success'
 
 def is_skipped(state, platform, key, is_morning):
     if is_morning: return False
-    return state.get('morning', {}).get(platform, {}).get(key) == 'success'
+    p = state.get('morning', {}).get(platform, {})
+    return isinstance(p, dict) and p.get(key) == 'success'
 
 def all_done(state, config):
     """config = {'glados': [keys], 'ikuuu': [keys], 'smai': [keys]}"""
@@ -260,6 +274,7 @@ def main():
     glados_cookies = get_glados_cookies()
     ikuuu_accounts = get_ikuuu_accounts()
     smai_sessions = get_smai_sessions()
+    smai_user_ids = get_smai_user_ids()
     config = {
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
         'ikuuu': [e for e, _ in ikuuu_accounts],
@@ -275,7 +290,6 @@ def main():
     # ========== GLaDOS ==========
     g_success = 0; g_total = len(glados_cookies)
     if glados_cookies:
-        results.append("### 🖥️ GLaDOS 签到结果")
         for i, ck in enumerate(glados_cookies):
             key = f"account_{i+1}"
             g = GLaDOS(ck)
@@ -293,37 +307,44 @@ def main():
         results.append("### 🖥️ GLaDOS\n未配置，跳过")
 
     # ========== ikuuu ==========
-    results.append("\n---\n### 📶 ikuuu 签到结果")
+    results.append("\n### 📶 ikuuu 签到结果")
+    i_success = 0; i_total = len(ikuuu_accounts)
     if ikuuu_accounts:
-        msgs = []; all_ok = True
+        msgs = []
         for email, pwd in ikuuu_accounts:
             if is_skipped(state, 'ikuuu', email, is_morning):
                 msgs.append(f"{email}: 上午已签，跳过")
+                i_success += 1
             else:
                 msg, ok = ikuuu_one(email, pwd)
                 msgs.append(f"{email}: {msg}")
-                if ok: record_success(state, 'ikuuu', email)
-                else:
-                    all_ok = False
-                    if is_expired('ikuuu', msg): expired.append(f"📶 ikuuu [{email}] 账号可能失效")
+                if ok:
+                    record_success(state, 'ikuuu', email)
+                    i_success += 1
+                elif is_expired('ikuuu', msg): expired.append(f"📶 ikuuu [{email}] 账号可能失效")
         results.append(f"• 结果：{' | '.join(msgs)}")
     else:
         results.append("• 未配置，跳过")
 
     # ========== SMAI ==========
-    results.append("\n---\n### ✅ SMAI.AI 签到结果")
-    uid_hint = os.environ.get('SMAI_USER_ID', '')
+    results.append("\n### ✅ SMAI.AI 签到结果")
+    smai_user_ids = get_smai_user_ids()
+    s_success = 0; s_total = len(smai_sessions)
     if smai_sessions:
         msgs = []
-        for sess in smai_sessions:
+        for i, sess in enumerate(smai_sessions):
             key = sess[:20] + "..."
+            uid = smai_user_ids[i] if i < len(smai_user_ids) else ''
             if is_skipped(state, 'smai', key, is_morning):
                 msgs.append("上午已签，跳过")
+                s_success += 1
             else:
                 log(f"  SMAI 签到... ({key})")
-                msg, ok = smai_one(sess, uid_hint)
+                msg, ok = smai_one(sess, uid)
                 msgs.append(msg)
-                if ok: record_success(state, 'smai', key)
+                if ok:
+                    record_success(state, 'smai', key)
+                    s_success += 1
                 elif is_expired('smai', msg): expired.append(f"✅ SMAI [{key}] Session 可能过期")
         results.append(f"• 结果：{' | '.join(msgs)}")
     else:
@@ -332,13 +353,21 @@ def main():
     save_state(state)
 
     # ========== 推送 ==========
+    # 汇总统计
+    total_done = g_success + i_success + s_success
+    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0)
+    summary = f"📊 汇总：{total_done}/{total_all} 成功"
+    if g_total: summary += f" | GLaDOS {g_success}/{g_total}"
+    if i_total: summary += f" | ikuuu {i_success}/{i_total}"
+    if s_total: summary += f" | SMAI {s_success}/{s_total}"
+
     body = ""
     if expired:
         body += "⚠️ **Token 过期警告**\n" + "\n".join(f"  🔴 {w}" for w in expired) + "\n  👉 请更新对应 Secret\n\n"
-    body += "\n".join(results) + f"\n\n---\n⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    body += "\n".join(results) + f"\n\n---\n{summary}\n⏰ {now.strftime('%Y-%m-%d %H:%M:%S')}"
 
     prefix = "⚠️ " if expired else ""
-    title = f"{prefix}多平台签到 | GLaDOS {g_success}/{g_total if g_total else 0}"
+    title = f"{prefix}多平台签到 {total_done}/{total_all}"
 
     wpush(os.environ.get("WPUSH_APIKEY"), title, body)
 

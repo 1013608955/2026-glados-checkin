@@ -55,14 +55,16 @@
 | Secret 名称 | 值 | 必填 | 说明 |
 |---|---|---|---|
 | `SMAI_SESSION` | `MTc3MzYw...` | ✅ | 浏览器 session 值 |
-| `SMAI_USER_ID` | `1207` | ✅ | 你的用户 ID（数字） |
+| `SMAI_USER_ID` | `1207` | ✅ | `new-api-user` 的值 |
 
-**获取方法：**
+**获取方法：** 两个值从同一个请求中获取
 1. 登录 https://api.smai.ai/console/checkin
-2. 按 `F12` → **Network（网络）** → 刷新页面
-3. 随便点一个 `/api/` 开头的请求
-4. 在 **Request Headers** 里找到 `New-Api-User`，后面的数字就是你的 User ID
-5. 同一请求的 **Cookie** 里复制 `session=` 后面的值
+2. 按 `F12` → **Network（网络）** → 点击页面上的签到按钮（或刷新页面）
+3. 点一个 `/api/` 开头的请求，查看 **Request Headers**：
+   - **`SMAI_SESSION`** → Cookie 字段中 `session=` 后面的值
+   - **`SMAI_USER_ID`** → `new-api-user` 字段的值（纯数字）
+
+> 💡 两个值必须来自**同一个账号**的浏览器请求。多账号用 `&` 分隔，一一对应。
 
 #### 微信推送（可选）
 
@@ -99,6 +101,7 @@
 | GLaDOS | `GLADOS_COOKIE` | `cookie1&cookie2&cookie3` |
 | ikuuu | `IKUUU_ACCOUNTS` | `email1:password1&email2:password2` |
 | SMAI.AI | `SMAI_SESSION` | `session1&session2` |
+| SMAI.AI | `SMAI_USER_ID` | `uid1&uid2`（与 session 一一对应） |
 
 ---
 
