@@ -55,7 +55,7 @@
 | Secret 名称 | 值 | 必填 | 说明 |
 |---|---|---|---|
 | `SMAI_SESSION` | `MTc3MzYw...` | ✅ | 浏览器 session 值 |
-| `SMAI_USER_ID` | `1207` | ✅ | `new-api-user` 的值 |
+| `SMAI_USER_ID` | `1201` | ✅ | `new-api-user` 的值 |
 
 **获取方法：** 两个值从同一个请求中获取
 1. 登录 https://api.smai.ai/console/checkin
