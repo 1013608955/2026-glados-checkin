@@ -284,14 +284,15 @@ def smai_one(session, uid_hint=''):
             total_days = st.get('total_checkins', '?')
             total_quota_kb = st.get('total_quota', 0)
 
-            # 格式化点数 (KB -> 可读)
-            def fmt_quota(kb):
-                if kb is None: return '?'
-                try: kb = float(kb)
-                except: return str(kb)
-                if kb >= 1048576: return f"{kb/1048576:.2f} GB"
-                if kb >= 1024: return f"{kb/1024:.2f} MB"
-                return f"{kb:.0f} KB"
+            # 格式化额度 (美元，通常精度较高)
+            def fmt_quota(val):
+                if val is None: return '?'
+                try:
+                    val = float(val)
+                    if val == 0: return '$0'
+                    return f"${val:.6f}".rstrip('0').rstrip('.')
+                except:
+                    return str(val)
 
             earned_str = fmt_quota(earned_kb)
             total_str = fmt_quota(total_quota_kb)
