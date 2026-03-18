@@ -193,28 +193,35 @@ def smai_one(session, uid_hint=''):
         }
         if method == 'POST': h['Content-Type'] = 'application/json'
         try:
-            r = requests.request(method, f'{SMAI_API}{path}', headers=h, json={} if method == 'POST' else None, timeout=10)
+            r = requests.request(method, f'{SMAI_API}{path}', headers=h,
+                json={} if method == 'POST' else None, timeout=15, verify=False)
             return r.json()
         except Exception as e:
             return {'success': False, 'message': str(e)}
+
     try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         uid = uid_hint
-        # 必须先获取 user_id
         if not uid:
             try:
+                # /api/user/self 也需要 New-Api-User 头，先用占位值
                 r = requests.get(f'{SMAI_API}/api/user/self',
-                    headers={'Accept': 'application/json', 'Cookie': f'session={session}',
-                             'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=10)
+                    headers={'Accept': 'application/json', 'New-Api-User': '0',
+                             'Cookie': f'session={session}',
+                             'User-Agent': COMMON_HEADERS['User-Agent']}, timeout=15, verify=False)
                 info = r.json()
                 if info.get('success') and info.get('data', {}).get('id'):
                     uid = str(info['data']['id'])
                     log(f"  SMAI 用户: {info['data'].get('username', uid)} (ID: {uid})")
                 else:
-                    log(f"  SMAI 获取用户信息失败: {info.get('message', '未知错误')}")
-                    return info.get('message', '获取用户信息失败，请检查 session 是否有效'), False
+                    msg = info.get('message', '未知错误')
+                    log(f"  SMAI 获取用户信息失败: {msg}")
+                    return msg, False
             except Exception as e:
                 log(f"  SMAI 获取用户信息异常: {e}")
-                return f"获取用户信息失败: {e}", False
+                return f"网络异常: {e}", False
 
         stats = smai_api('GET', f'/api/user/checkin?year={datetime.now().year}', uid)
         if stats.get('success') and stats.get('data', {}).get('checked_in_today'):
