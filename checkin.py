@@ -289,6 +289,8 @@ def smai_one(session, uid_hint=''):
                 if val is None: return '?'
                 try:
                     val = float(val)
+                    # 转换单位：API返回的是quota，1 quota = 0.000002 USD
+                    val = val * 0.000002
                     if val == 0: return '$0'
                     return f"${val:.6f}".rstrip('0').rstrip('.')
                 except:
