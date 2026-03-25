@@ -342,24 +342,32 @@ class VOAPI:
         """执行签到"""
         r = self.req('POST', '/api/check_in')
         if r:
-            self.checkin_msg = r.get('message', r.get('msg', '签到完成'))
-            # 判断签到是否成功
-            self.success = r.get('success', False) or '成功' in str(r) or 'already' in str(r).lower()
+            # VOAPI 返回格式: {"code": 1, "msg": "Signed in today"}
+            # code=1 表示签到成功或已签到
+            code = r.get('code', 0)
+            self.checkin_msg = r.get('msg', r.get('message', '签到完成'))
+            self.success = (code == 1) or '成功' in self.checkin_msg or 'already' in self.checkin_msg.lower() or 'signed in' in self.checkin_msg.lower()
         else:
             self.checkin_msg = "网络错误或 Token 过期"
 
     def load_info(self):
         """加载用户信息"""
         r = self.req('GET', '/api/user/info')
-        if r and 'data' in r:
+        if r and r.get('code') == 0 and 'data' in r:
             data = r['data']
-            self.email = data.get('email', data.get('username', '?'))
-            # 尝试获取余额/积分
-            self.points = str(data.get('quota', data.get('balance', data.get('points', '?'))))
-        elif r:
-            # 有些 API 直接返回数据
-            self.email = r.get('email', r.get('username', '?'))
-            self.points = str(r.get('quota', r.get('balance', r.get('points', '?'))))
+            self.email = data.get('username', data.get('email', '?'))
+            # 计算总余额: basicBalance + bindBalance
+            basic = data.get('basicBalance', '0')
+            bind = data.get('bindBalance', '0')
+            try:
+                total = float(basic) + float(bind)
+                self.points = f"{total:.6f}".rstrip('0').rstrip('.') if total > 0 else '0'
+            except:
+                self.points = basic or bind or '?'
+        elif r and 'username' in r:
+            # 有些 API 直接返回用户数据（无 code 包装）
+            self.email = r.get('username', r.get('email', '?'))
+            self.points = str(r.get('basicBalance', r.get('balance', r.get('points', '?'))))
 
     def text(self):
         """生成结果文本"""
