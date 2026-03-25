@@ -47,6 +47,7 @@ jobs:
           IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
           SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
           SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
+          VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}
 
       - name: Check Skip Afternoon
         id: skip_check
@@ -72,3 +73,4 @@ jobs:
           IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
           SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
           SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
+          VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}
