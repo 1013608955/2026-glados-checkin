@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)
+2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + VOAPI)
 功能：
-- GLaDOS / ikuuu / SMAI.AI 全自动签到
+- GLaDOS / ikuuu / SMAI.AI / VOAPI 全自动签到
 - 多账号支持（& 分隔）
 - 按账号级别：上午成功 → 下午跳过该账号
 - Token 过期自动检测 + 警告推送
@@ -309,6 +309,71 @@ def smai_one(session, uid_hint=''):
     except Exception as e:
         return str(e), False, {}
 
+# ================= VOAPI =================
+class VOAPI:
+    def __init__(self, token):
+        self.token = token
+        self.email = "未知账号"
+        self.left_days = "?"
+        self.points = "?"
+        self.checkin_msg = "执行失败"
+        self.success = False
+
+    def req(self, method, path, data=None):
+        """发送请求到 VOAPI"""
+        try:
+            h = COMMON_HEADERS.copy()
+            h.update({
+                'Authorization': self.token,
+                'Origin': 'https://demo.voapi.top',
+                'Referer': 'https://demo.voapi.top/checkIn?_userMenuKey=checkIn',
+            })
+            r = requests.request(method, f'https://demo.voapi.top{path}', headers=h, json=data, timeout=10)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                log(f"  VOAPI 请求失败: {r.status_code} - {r.text[:100]}")
+                return None
+        except Exception as e:
+            log(f"  VOAPI 请求异常: {e}")
+            return None
+
+    def checkin(self):
+        """执行签到"""
+        r = self.req('POST', '/api/check_in')
+        if r:
+            self.checkin_msg = r.get('message', r.get('msg', '签到完成'))
+            # 判断签到是否成功
+            self.success = r.get('success', False) or '成功' in str(r) or 'already' in str(r).lower()
+        else:
+            self.checkin_msg = "网络错误或 Token 过期"
+
+    def load_info(self):
+        """加载用户信息"""
+        r = self.req('GET', '/api/user/info')
+        if r and 'data' in r:
+            data = r['data']
+            self.email = data.get('email', data.get('username', '?'))
+            # 尝试获取余额/积分
+            self.points = str(data.get('quota', data.get('balance', data.get('points', '?'))))
+        elif r:
+            # 有些 API 直接返回数据
+            self.email = r.get('email', r.get('username', '?'))
+            self.points = str(r.get('quota', r.get('balance', r.get('points', '?'))))
+
+    def text(self):
+        """生成结果文本"""
+        status = "✅" if self.success else "❌"
+        return f"### 🌐 VOAPI 签到结果\n• 账号：{self.email}\n• 签到：{status} {self.checkin_msg}\n• 余额：{self.points}"
+
+def get_voapi_tokens():
+    """从环境变量获取 VOAPI Token"""
+    raw = os.environ.get("VOAPI_TOKEN", "")
+    if not raw:
+        return []
+    # 支持多账号（& 分隔）
+    return [t.strip() for t in (raw.split('\n') if '\n' in raw else raw.split('&')) if t.strip()]
+
 # ================= 主程序 =================
 def main():
     # 修改：获取北京时间，替代本地时间
@@ -329,10 +394,12 @@ def main():
     ikuuu_accounts = get_ikuuu_accounts()
     smai_sessions = get_smai_sessions()
     smai_user_ids = get_smai_user_ids()
+    voapi_tokens = get_voapi_tokens()
     config = {
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
         'ikuuu': [e for e, _ in ikuuu_accounts],
         'smai': [s[:20]+"..." for s in smai_sessions],
+        'voapi': [t[:20]+"..." for t in voapi_tokens],
     }
 
     # 下午：全部成功则跳过
@@ -407,16 +474,41 @@ def main():
     else:
         results.append("• 未配置，跳过")
 
+    # ========== VOAPI ==========
+    voapi_tokens = get_voapi_tokens()
+    v_success = 0; v_total = len(voapi_tokens)
+    if voapi_tokens:
+        for i, token in enumerate(voapi_tokens):
+            key = token[:20] + "..."
+            if is_skipped(state, 'voapi', key, is_morning):
+                results.append(f"\n### 🌐 VOAPI 签到结果")
+                results.append(f"• 账号{i+1}: 上午已签，跳过")
+                v_success += 1
+            else:
+                log(f"  VOAPI 签到... (账号{i+1})")
+                v = VOAPI(token)
+                v.checkin()
+                if v.success:
+                    record_success(state, 'voapi', key)
+                    v_success += 1
+                elif is_expired('voapi', v.checkin_msg):
+                    expired.append(f"🌐 VOAPI [账号{i+1}] Token 可能过期")
+                v.load_info()
+                results.append(v.text())
+    else:
+        results.append("\n### 🌐 VOAPI\n未配置，跳过")
+
     save_state(state)
 
     # ========== 推送 ==========
     # 汇总统计
-    total_done = g_success + i_success + s_success
-    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0)
+    total_done = g_success + i_success + s_success + v_success
+    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0) + (v_total if v_total else 0)
     summary = f"📊 汇总：{total_done}/{total_all} 成功"
     if g_total: summary += f" | GLaDOS {g_success}/{g_total}"
     if i_total: summary += f" | ikuuu {i_success}/{i_total}"
     if s_total: summary += f" | SMAI {s_success}/{s_total}"
+    if v_total: summary += f" | VOAPI {v_success}/{v_total}"
 
     body = ""
     if expired:

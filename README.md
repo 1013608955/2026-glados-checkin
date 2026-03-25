@@ -1,4 +1,4 @@
-# 2026多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)
+# 2026多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + VOAPI)
 
 本项目是一个自动签到脚本，支持并发签到多个平台。
 
@@ -9,6 +9,7 @@
 | GLaDOS | ✅ 完全支持 | 网络超级连接、主机测试、分数签到 |
 | ikuuu | ✅ 完全支持 | VPN服务器签到、会员管理 |
 | SMAI.AI | ✅ 完全支持 | 科学上网服务、实验机、网络分数 |
+| VOAPI | ✅ 完全支持 | API平台签到、余额查询 |
 
 ## 特性功能
 
@@ -33,6 +34,9 @@ IKUUU_ACCOUNTS="email1:password1&email2:password2"
 # SMAI
 SMAI_SESSION="your_session_here"
 SMAI_USER_ID="your_user_id_here"
+
+# VOAPI
+VOAPI_TOKEN="your_token_here"
 ```
 
 ### 例子配置
@@ -47,6 +51,9 @@ IKUUU_ACCOUNTS="user1@example.com:pass1&user2@example.com:pass2"
 # 一个SMAI账号
 SMAI_SESSION="session_abc123..."
 SMAI_USER_ID="123456789"
+
+# 一个VOAPI账号
+VOAPI_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 ## 签到结果示例
@@ -76,6 +83,7 @@ SMAI_USER_ID="123456789"
 
 ## 更新历史
 
+- 2026-03-26: 合并 VOAPI 签到功能，支持多账号签到
 - 2026-03-21: 修复SMAI额度单位转换问题，使显示的额度与网站一致
 
 ---
