@@ -346,7 +346,7 @@ class VOAPI:
             # code=1 表示签到成功或已签到
             code = r.get('code', 0)
             self.checkin_msg = r.get('msg', r.get('message', '签到完成'))
-            self.success = (code == 1) or '成功' in self.checkin_msg or 'already' in self.checkin_msg.lower() or 'signed in' in self.checkin_msg.lower()
+            self.success = (code in (0, 1)) or '成功' in self.checkin_msg or '签到完成' in self.checkin_msg or 'already' in self.checkin_msg.lower() or 'signed in' in self.checkin_msg.lower()
         else:
             self.checkin_msg = "网络错误或 Token 过期"
 
