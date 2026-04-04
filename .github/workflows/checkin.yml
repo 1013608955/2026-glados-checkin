@@ -43,8 +43,7 @@ jobs:
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
           WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
-          IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
-          IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
+          IKUUU_COOKIE: ${{ secrets.IKUUU_COOKIE }}
           SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
           SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
           VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}
@@ -69,8 +68,7 @@ jobs:
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
           WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
-          IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
-          IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
+          IKUUU_COOKIE: ${{ secrets.IKUUU_COOKIE }}
           SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
           SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
           VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}

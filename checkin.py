@@ -50,6 +50,12 @@ def get_glados_cookies():
     return [extract_cookie(c) for c in (raw.split('\n') if '\n' in raw else raw.split('&')) if c.strip()]
 
 def get_ikuuu_accounts():
+    """优先读取 IKUUU_COOKIE（绕过验证码）；回退到账号密码"""
+    cookie_raw = os.environ.get('IKUUU_COOKIE', '')
+    if cookie_raw:
+        cookies = [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()]
+        return [('cookie', c) for c in cookies]
+    # 回退到账号密码
     accounts_raw = os.environ.get('IKUUU_ACCOUNTS', '')
     if accounts_raw:
         accounts = []
@@ -58,9 +64,16 @@ def get_ikuuu_accounts():
             if ':' in item:
                 email, pwd = item.split(':', 1)
                 accounts.append((email.strip(), pwd.strip()))
-        return accounts
+        return [('pwd', (email, pwd)) for email, pwd in accounts]
     email, pwd = os.environ.get('IKUUU_EMAIL', ''), os.environ.get('IKUUU_PASSWORD', '')
-    return [(email, pwd)] if email and pwd else []
+    return [('pwd', (email, pwd))] if email and pwd else []
+
+def get_ikuuu_cookies():
+    """获取 ikuuu Cookie 列表（兼容新旧环境变量）"""
+    cookie_raw = os.environ.get('IKUUU_COOKIE', '')
+    if not cookie_raw:
+        return []
+    return [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()]
 
 def get_smai_sessions():
     raw = os.environ.get('SMAI_SESSION', '')
@@ -191,20 +204,42 @@ class GLaDOS:
         return f"### 🖥️ GLaDOS - {self.email}\n• 积分：{self.points} ({self.points_change})\n• 剩余：{self.left_days}天\n• 结果：{self.checkin_msg}\n\n🎁 兑换：\n{self.exchange_info or '暂无'}"
 
 # ================= ikuuu =================
-def ikuuu_one(email, pwd):
+def ikuuu_pwd_login(email, pwd):
+    """账号密码模式（可能被验证码拦截）"""
     s = requests.session()
     h = {'origin': 'https://ikuuu.nl', 'user-agent': COMMON_HEADERS['User-Agent']}
     try:
         r = s.post('https://ikuuu.nl/auth/login', headers=h, data={'email': email, 'passwd': pwd}, timeout=10).json()
         log(f"  ikuuu 登录 [{email}]: {r['msg']}")
-        # 登录失败直接返回
         if r['msg'] != '登录成功':
             return r['msg'], False
         c = s.post('https://ikuuu.nl/user/checkin', headers=h, timeout=10).json()
         log(f"  ikuuu 签到 [{email}]: {c['msg']}")
-        # 优化点2：ikuuu 已签到也判定为成功
         ok = "成功" in c['msg'] or "获得" in c['msg'] or "已经签到" in c['msg'] or "似乎已经签到过了" in c['msg']
         return c['msg'], ok
+    except Exception as e:
+        return str(e), False
+
+def ikuuu_checkin_cookie(cookie_str):
+    """Cookie 模式签到：直接 POST /user/checkin，绕过登录验证码"""
+    h = COMMON_HEADERS.copy()
+    h['Cookie'] = cookie_str
+    h['Origin'] = 'https://ikuuu.nl'
+    h['Referer'] = 'https://ikuuu.nl/user'
+    h['Accept'] = 'application/json, text/javascript, */*; q=0.01'
+    h['Accept-Language'] = 'zh-CN,zh;q=0.9'
+    h['X-Requested-With'] = 'XMLHttpRequest'
+    try:
+        r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data={}, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            msg = data.get('msg', data.get('message', '未知结果'))
+            log(f"  ikuuu Cookie 签到: {msg}")
+            ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
+            return msg, ok
+        else:
+            log(f"  ikuuu Cookie 签到 HTTP {r.status_code}: {r.text[:100]}")
+            return f"HTTP {r.status_code}", False
     except Exception as e:
         return str(e), False
 
@@ -405,7 +440,8 @@ def main():
     voapi_tokens = get_voapi_tokens()
     config = {
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
-        'ikuuu': [e for e, _ in ikuuu_accounts],
+        # ikuuu: cookie 用 "cookie_N" 做 key，密码用 email 做 key
+        'ikuuu': [f"cookie_{i+1}" if mode == 'cookie' else email for i, (mode, val) in enumerate(ikuuu_accounts) for email in [val[0] if isinstance(val, tuple) else val]],
         'smai': [s[:20]+"..." for s in smai_sessions],
         'voapi': [t[:20]+"..." for t in voapi_tokens],
     }
@@ -440,17 +476,35 @@ def main():
     i_success = 0; i_total = len(ikuuu_accounts)
     if ikuuu_accounts:
         msgs = []
-        for email, pwd in ikuuu_accounts:
-            if is_skipped(state, 'ikuuu', email, is_morning):
-                msgs.append(f"{email}: 上午已签，跳过")
-                i_success += 1
+        for i, acct in enumerate(ikuuu_accounts):
+            mode, val = acct
+            if mode == 'cookie':
+                display = f"cookie_{i+1}"
+                key = display
             else:
-                msg, ok = ikuuu_one(email, pwd)
-                msgs.append(f"{email}: {msg}")
+                email_val = val[0]
+                display = email_val
+                key = email_val
+            if is_skipped(state, 'ikuuu', key, is_morning):
+                msgs.append(f"{display}: 上午已签，跳过")
+                i_success += 1
+            elif mode == 'cookie':
+                msg, ok = ikuuu_checkin_cookie(val)
+                msgs.append(f"{display}: {msg}")
                 if ok:
-                    record_success(state, 'ikuuu', email)
+                    record_success(state, 'ikuuu', key)
                     i_success += 1
-                elif is_expired('ikuuu', msg): expired.append(f"📶 ikuuu [{email}] 账号可能失效")
+                elif is_expired('ikuuu', msg):
+                    expired.append(f"📶 ikuuu [{display}] Cookie 可能过期")
+            else:
+                email_val, pwd_val = val
+                msg, ok = ikuuu_pwd_login(email_val, pwd_val)
+                msgs.append(f"{display}: {msg}")
+                if ok:
+                    record_success(state, 'ikuuu', key)
+                    i_success += 1
+                elif is_expired('ikuuu', msg):
+                    expired.append(f"📶 ikuuu [{display}] 账号可能失效")
         results.append(f"• 结果：{' | '.join(msgs)}")
     else:
         results.append("• 未配置，跳过")
