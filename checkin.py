@@ -20,6 +20,7 @@ if sys.platform.startswith('win'):
 
 # ================= 全局配置 =================
 GLADOS_DOMAINS = ["https://glados.cloud", "https://glados.rocks", "https://glados.network"]
+IKUUU_DOMAINS = ["https://ikuuu.fyi", "https://ikuuu.nl"]  # .fyi 为主，.nl 为备用
 COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Content-Type': 'application/json;charset=UTF-8',
@@ -214,26 +215,47 @@ class GLaDOS:
 
     def text(self):
         return f"### 🖥️ GLaDOS - {self.email}\n• 积分：{self.points} ({self.points_change})\n• 剩余：{self.left_days}天\n• 结果：{self.checkin_msg}\n\n🎁 兑换：\n{self.exchange_info or '暂无'}"
-
 # ================= ikuuu =================
 def ikuuu_pwd_login(email, pwd):
-    """账号密码模式（可能被验证码拦截）"""
-    s = requests.session()
-    h = {'origin': 'https://ikuuu.fyi', 'user-agent': COMMON_HEADERS['User-Agent']}
-    try:
-        r = s.post('https://ikuuu.fyi/auth/login', headers=h, data={'email': email, 'passwd': pwd}, timeout=10).json()
-        log(f"  ikuuu 登录 [{email}]: {r['msg']}")
-        if r['msg'] != '登录成功':
-            return r['msg'], False
-        c = s.post('https://ikuuu.fyi/user/checkin', headers=h, timeout=10).json()
-        log(f"  ikuuu 签到 [{email}]: {c['msg']}")
-        ok = "成功" in c['msg'] or "获得" in c['msg'] or "已经签到" in c['msg'] or "似乎已经签到过了" in c['msg']
-        return c['msg'], ok
-    except Exception as e:
-        return str(e), False
+    """账号密码模式（可能被验证码拦截）- 多域名尝试"""
+    last_error = ""
+    
+    for domain in IKUUU_DOMAINS:
+        s = requests.session()
+        base = domain.rstrip('/')
+        h = {
+            'origin': base,
+            'user-agent': COMMON_HEADERS['User-Agent'],
+            'referer': f'{base}/auth/login',
+        }
+        try:
+            # 登录
+            r = s.post(f'{base}/auth/login', headers=h, data={'email': email, 'passwd': pwd}, timeout=15)
+            if r.status_code != 200:
+                last_error = f"{domain.split('://')[-1]} 返回 HTTP {r.status_code}"
+                continue
+            
+            result = r.json()
+            if result.get('msg') != '登录成功':
+                log(f"  ikuuu 登录 [{email}] @ {domain}: {result.get('msg')}")
+                last_error = result.get('msg', '未知错误')
+                continue
+            
+            # 签到
+            c = s.post(f'{base}/user/checkin', headers=h, timeout=15).json()
+            log(f"  ikuuu 登录签到成功 @ {domain}")
+            msg = c.get('msg', c.get('message', '未知结果'))
+            ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg
+            return msg, ok
+        except Exception as e:
+            last_error = f"{domain.split('://')[-1]} 异常：{str(e)[:30]}"
+            continue
+    
+    return f"所有域名均失败：{last_error}", False
+
 
 def ikuuu_checkin_cookie(cookie_str):
-    """Cookie 模式签到：直接 POST /user/checkin，绕过登录验证码"""
+    """Cookie 模式签到：直接 POST /user/checkin，多域名容错"""
     h = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -241,38 +263,61 @@ def ikuuu_checkin_cookie(cookie_str):
         'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8',
         'X-Requested-With': 'XMLHttpRequest',
         'Cookie': cookie_str,
-        'Origin': 'https://ikuuu.fyi',
-        'Referer': 'https://ikuuu.fyi/user',
         'DNT': '1',
         'Sec-GPC': '1',
         'Connection': 'keep-alive',
     }
     
-    # 第一次尝试：带 SSL 验证
-    try:
-        r = requests.post('https://ikuuu.fyi/user/checkin', headers=h, data='', timeout=15, verify=True)
+    for i, domain in enumerate(IKUUU_DOMAINS):
+        base = domain.rstrip('/')
+        h['Origin'] = base
+        h['Referer'] = f'{base}/user'
         
-        if r.status_code == 200:
-            try:
-                data = r.json()
-                msg = data.get('msg', data.get('message', '未知结果'))
-                log(f"  ikuuu Cookie 签到：{msg}")
-                ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
-                return msg, ok
-            except Exception as json_err:
-                log(f"  ikuuu 返回非 JSON: {r.text[:150]}")
-                return f"非 JSON 响应", False
-        elif r.status_code == 403:
-            return "被 Cloudflare 拦截 (403)", False
-        else:
-            return f"HTTP {r.status_code}", False
-    except requests.exceptions.SSLError as e:
-        log(f"  ⚠️ ikuuu Cookie 模式：SSL 握手失败 — ikuuu.fyi 可能拒绝了我们的 TLS 指纹")
-        return "SSL 握手失败（建议使用账号密码模式或本地运行）", False
-    except requests.exceptions.Timeout:
-        return "请求超时", False
-    except Exception as e:
-        return f"{type(e).__name__}: {str(e)[:50]}", False
+        try:
+            r = requests.post(f'{base}/user/checkin', headers=h, data='', timeout=15, verify=True)
+            
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                    msg = data.get('msg', data.get('message', '未知结果'))
+                    log(f"  ✅ ikuuu Cookie 签到成功 @ {domain}")
+                    ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
+                    return msg, ok
+                except Exception as json_err:
+                    log(f"  ikuuu @ {domain} 返回非 JSON: {r.text[:100]}")
+                    if i < len(IKUUU_DOMAINS) - 1:
+                        continue
+                    return f"非 JSON 响应", False
+            elif r.status_code == 403:
+                if i < len(IKUUU_DOMAINS) - 1:
+                    log(f"  ⚠️ {domain} 被 Cloudflare 拦截，尝试下一个...")
+                    continue
+                return "被 Cloudflare 拦截 (403)", False
+            else:
+                if i < len(IKUUU_DOMAINS) - 1:
+                    log(f"  ⚠️ {domain} HTTP {r.status_code}, 尝试下一个...")
+                    continue
+                return f"HTTP {r.status_code}", False
+                
+        except requests.exceptions.SSLError as e:
+            if i < len(IKUUU_DOMAINS) - 1:
+                log(f"  ⚠️ ikuuu {domain} SSL 握手失败，尝试备用域名...")
+                continue
+            log(f"  ⚠️ ikuuu Cookie 模式：所有域名 SSL 均失败")
+            return "SSL 握手失败（建议使用账号密码模式或本地运行）", False
+            
+        except requests.exceptions.Timeout:
+            if i < len(IKUUU_DOMAINS) - 1:
+                continue
+            return "请求超时", False
+            
+        except Exception as e:
+            if i < len(IKUUU_DOMAINS) - 1:
+                log(f"  ⚠️ {domain} 异常：{type(e).__name__}, 跳过")
+                continue
+            return f"{type(e).__name__}: {str(e)[:50]}", False
+    
+    return "所有域名均不可用", False
 
 # ================= SMAI =================
 def smai_one(session, uid_hint=''):
