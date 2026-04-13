@@ -158,9 +158,13 @@ def wpush(apikey, title, content):
         r = requests.post("https://api.wpush.cn/api/v1/send",
             json={"apikey": apikey, "title": title, "content": content, "channel": "wechat"},
             headers={"Content-Type": "application/json"}, timeout=10)
-        log("✅ 推送成功" if r.status_code == 200 else f"❌ 推送失败: {r.text}")
+        log(f"💬 推送成功" if r.status_code == 200 else f"⚠️ 推送返回 {r.status_code}")
+    except requests.exceptions.ConnectionError as e:
+        log(f"⚠️ 推送网络不可达（GitHub Actions runner 可能在中国大陆）")
+    except requests.exceptions.Timeout:
+        log(f"⚠️ 推送超时")
     except Exception as e:
-        log(f"❌ 推送异常: {e}")
+        log(f"⚠️ 推送异常：{type(e).__name__}")
 
 # ================= GLaDOS =================
 class GLaDOS:
@@ -242,47 +246,33 @@ def ikuuu_checkin_cookie(cookie_str):
         'DNT': '1',
         'Sec-GPC': '1',
         'Connection': 'keep-alive',
-        'Cache-Control': 'max-age=0',
-        'Upgrade-Insecure-Requests': '1',
     }
     
-    # GitHub Actions 环境可能遇到 Cloudflare 反爬，尝试多种策略
-    strategies = [
-        {'verify': True},
-        {'verify': False},
-    ]
-    
-    for i, cfg in enumerate(strategies):
-        try:
-            r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data='', timeout=15, verify=cfg['verify'])
-            
-            if r.status_code == 200:
-                try:
-                    data = r.json()
-                    msg = data.get('msg', data.get('message', '未知结果'))
-                    log(f"  ikuuu Cookie 签到：{msg}")
-                    ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
-                    return msg, ok
-                except Exception as json_err:
-                    log(f"  ikuuu 返回非 JSON: {r.text[:150]}")
-                    return f"非 JSON 响应：{str(json_err)[:30]}", False
-            elif r.status_code == 403:
-                log(f"  ikuuu 被拒绝访问（Cloudflare?）")
-                return "被拦截（403 Forbidden）", False
-            else:
-                log(f"  ikuuu Cookie 签到 HTTP {r.status_code}: {r.text[:100]}")
-                return f"HTTP {r.status_code}", False
-        except requests.exceptions.SSLError as e:
-            log(f"  ikuuu SSL 错误 (策略{i+1}/2): {str(e)[:50]}")
-            continue
-        except requests.exceptions.Timeout:
-            log(f"  ikuuu 请求超时 (策略{i+1}/2)")
-            continue
-        except Exception as e:
-            log(f"  ikuuu 异常 (策略{i+1}/2): {type(e).__name__} - {str(e)[:50]}")
-            return f"{type(e).__name__}: {str(e)[:50]}", False
-    
-    return "请求失败（所有策略均不可用）", False
+    # 第一次尝试：带 SSL 验证
+    try:
+        r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data='', timeout=15, verify=True)
+        
+        if r.status_code == 200:
+            try:
+                data = r.json()
+                msg = data.get('msg', data.get('message', '未知结果'))
+                log(f"  ikuuu Cookie 签到：{msg}")
+                ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
+                return msg, ok
+            except Exception as json_err:
+                log(f"  ikuuu 返回非 JSON: {r.text[:150]}")
+                return f"非 JSON 响应", False
+        elif r.status_code == 403:
+            return "被 Cloudflare 拦截 (403)", False
+        else:
+            return f"HTTP {r.status_code}", False
+    except requests.exceptions.SSLError as e:
+        log(f"  ⚠️ ikuuu Cookie 模式：SSL 握手失败 — ikuuu.nl 可能拒绝了我们的 TLS 指纹")
+        return "SSL 握手失败（建议使用账号密码模式或本地运行）", False
+    except requests.exceptions.Timeout:
+        return "请求超时", False
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)[:50]}", False
 
 # ================= SMAI =================
 def smai_one(session, uid_hint=''):
