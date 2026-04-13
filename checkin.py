@@ -231,45 +231,58 @@ def ikuuu_pwd_login(email, pwd):
 def ikuuu_checkin_cookie(cookie_str):
     """Cookie 模式签到：直接 POST /user/checkin，绕过登录验证码"""
     h = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Content-Type': 'application/json;charset=UTF-8',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8',
         'X-Requested-With': 'XMLHttpRequest',
         'Cookie': cookie_str,
         'Origin': 'https://ikuuu.nl',
         'Referer': 'https://ikuuu.nl/user',
-        'sec-ch-ua': '"Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
+        'DNT': '1',
+        'Sec-GPC': '1',
+        'Connection': 'keep-alive',
+        'Cache-Control': 'max-age=0',
+        'Upgrade-Insecure-Requests': '1',
     }
     
-    # 尝试带 SSL 验证的请求
-    for retry in range(2):
+    # GitHub Actions 环境可能遇到 Cloudflare 反爬，尝试多种策略
+    strategies = [
+        {'verify': True, 'timeout': 15},
+        {'verify': False, 'timeout': 15, 'proxies': None},
+    ]
+    
+    for i, cfg in enumerate(strategies):
         try:
-            r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data={}, timeout=15, verify=(retry == 0))
+            r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data='', timeout=cfg['timeout'], **cfg)
+            
             if r.status_code == 200:
-                data = r.json()
-                msg = data.get('msg', data.get('message', '未知结果'))
-                log(f"  ikuuu Cookie 签到：{msg}")
-                ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
-                return msg, ok
+                try:
+                    data = r.json()
+                    msg = data.get('msg', data.get('message', '未知结果'))
+                    log(f"  ikuuu Cookie 签到：{msg}")
+                    ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
+                    return msg, ok
+                except Exception as json_err:
+                    log(f"  ikuuu 返回非 JSON: {r.text[:150]}")
+                    return f"非 JSON 响应：{str(json_err)[:30]}", False
+            elif r.status_code == 403:
+                log(f"  ikuuu 被拒绝访问（Cloudflare?）")
+                return "被拦截（403 Forbidden）", False
             else:
                 log(f"  ikuuu Cookie 签到 HTTP {r.status_code}: {r.text[:100]}")
                 return f"HTTP {r.status_code}", False
         except requests.exceptions.SSLError as e:
-            if retry == 0:
-                log(f"  ikuuu SSL 握手失败，降级重试...")
-                continue
-            else:
-                return f"SSL 错误：{str(e)[:50]}", False
+            log(f"  ikuuu SSL 错误 (策略{i+1}/2): {str(e)[:50]}")
+            continue
+        except requests.exceptions.Timeout:
+            log(f"  ikuuu 请求超时 (策略{i+1}/2)")
+            continue
         except Exception as e:
-            return str(e), False
+            log(f"  ikuuu 异常 (策略{i+1}/2): {type(e).__name__} - {str(e)[:50]}")
+            return f"{type(e).__name__}: {str(e)[:50]}", False
     
-    return "请求失败（SSL 降级后仍不可用）", False
+    return "请求失败（所有策略均不可用）", False
 
 # ================= SMAI =================
 def smai_one(session, uid_hint=''):
@@ -277,6 +290,10 @@ def smai_one(session, uid_hint=''):
     try:
         import subprocess
 
+        # 清理 session 中的重复前缀（用户可能粘贴了 "session=xxx" 格式的完整 cookie）
+        if session.startswith('session='):
+            session = session[8:].strip()
+        
         # 确定 user_id
         uid = uid_hint
         username = uid_hint or '未知'
