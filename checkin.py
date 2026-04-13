@@ -248,13 +248,13 @@ def ikuuu_checkin_cookie(cookie_str):
     
     # GitHub Actions 环境可能遇到 Cloudflare 反爬，尝试多种策略
     strategies = [
-        {'verify': True, 'timeout': 15},
-        {'verify': False, 'timeout': 15, 'proxies': None},
+        {'verify': True},
+        {'verify': False},
     ]
     
     for i, cfg in enumerate(strategies):
         try:
-            r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data='', timeout=cfg['timeout'], **cfg)
+            r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data='', timeout=15, verify=cfg['verify'])
             
             if r.status_code == 200:
                 try:
@@ -321,7 +321,7 @@ def smai_one(session, uid_hint=''):
             'curl', '-s', '--max-time', '15',
             f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
             '-H', 'Accept: application/json',
-            '-H', f'New-Api-User: {uid}',
+            '-H', f'Smai-Api-User: {uid}',
             '-H', f'Cookie: session={session}',
             '-H', 'User-Agent: Mozilla/5.0'
         ], capture_output=True, timeout=20)
@@ -335,7 +335,7 @@ def smai_one(session, uid_hint=''):
             f'{SMAI_API}/api/user/checkin',
             '-H', 'Accept: application/json',
             '-H', 'Content-Type: application/json',
-            '-H', f'New-Api-User: {uid}',
+            '-H', f'Smai-Api-User: {uid}',
             '-H', f'Cookie: session={session}',
             '-H', 'User-Agent: Mozilla/5.0',
             '-H', f'Origin: {SMAI_API}',
@@ -355,7 +355,7 @@ def smai_one(session, uid_hint=''):
                 'curl', '-s', '--max-time', '15',
                 f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
                 '-H', 'Accept: application/json',
-                '-H', f'New-Api-User: {uid}',
+                '-H', f'Smai-Api-User: {uid}',
                 '-H', f'Cookie: session={session}',
                 '-H', 'User-Agent: Mozilla/5.0'
             ], capture_output=True, timeout=20)
