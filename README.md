@@ -32,20 +32,22 @@ GLADOS_COOKIE="koa:sess=cookie1...&koa:sess=cookie2..."
 
 #### ikuuu（推荐 Cookie 模式）
 
+**⚠️ 重要：ikuuu.nl 已停止服务，请使用新域名 https://ikuuu.fyi/**
+
 **ikuuu 已启用登录验证码，账号密码模式会失败，请使用 Cookie 模式。**
 
 **如何获取 Cookie（方案一：浏览器开发者工具）**
 
-1. 用 Chrome/Edge 登录 ikuuu：https://ikuuu.nl
+1. 用 Chrome/Edge 登录 ikuuu：**https://ikuuu.fyi** （旧域名 .nl 已挂）
 2. 按 `F12` 打开开发者工具
 3. 切到 **Network**（网络）标签页
-4. 刷新页面（F5），在请求列表里点第一个请求（通常是 `ikuuu.nl` 或 `user`）
+4. 刷新页面（F5），在请求列表里点第一个请求（通常是 `ikuuu.fyi` 或 `user`）
 5. 右侧看 **Headers**（请求头），滚动找到 `Cookie:` 那一行
 6. 复制 `Cookie:` 后面直到行末的整个字符串
 
 你需要保留以下字段（缺一不可）：
 ```
-uid=xxxxx; email=你的邮箱; key=你的key; ip=你的ip; expire_in=时间戳
+uid=xxxxx; email=你的邮箱; key=你的 key; ip=你的 ip; expire_in=时间戳
 ```
 
 **⚠️ 缺少任何字段都可能被 Cloudflare 拦截，返回 HTML 而不是 JSON。**

@@ -219,13 +219,13 @@ class GLaDOS:
 def ikuuu_pwd_login(email, pwd):
     """账号密码模式（可能被验证码拦截）"""
     s = requests.session()
-    h = {'origin': 'https://ikuuu.nl', 'user-agent': COMMON_HEADERS['User-Agent']}
+    h = {'origin': 'https://ikuuu.fyi', 'user-agent': COMMON_HEADERS['User-Agent']}
     try:
-        r = s.post('https://ikuuu.nl/auth/login', headers=h, data={'email': email, 'passwd': pwd}, timeout=10).json()
+        r = s.post('https://ikuuu.fyi/auth/login', headers=h, data={'email': email, 'passwd': pwd}, timeout=10).json()
         log(f"  ikuuu 登录 [{email}]: {r['msg']}")
         if r['msg'] != '登录成功':
             return r['msg'], False
-        c = s.post('https://ikuuu.nl/user/checkin', headers=h, timeout=10).json()
+        c = s.post('https://ikuuu.fyi/user/checkin', headers=h, timeout=10).json()
         log(f"  ikuuu 签到 [{email}]: {c['msg']}")
         ok = "成功" in c['msg'] or "获得" in c['msg'] or "已经签到" in c['msg'] or "似乎已经签到过了" in c['msg']
         return c['msg'], ok
@@ -241,8 +241,8 @@ def ikuuu_checkin_cookie(cookie_str):
         'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8',
         'X-Requested-With': 'XMLHttpRequest',
         'Cookie': cookie_str,
-        'Origin': 'https://ikuuu.nl',
-        'Referer': 'https://ikuuu.nl/user',
+        'Origin': 'https://ikuuu.fyi',
+        'Referer': 'https://ikuuu.fyi/user',
         'DNT': '1',
         'Sec-GPC': '1',
         'Connection': 'keep-alive',
@@ -250,7 +250,7 @@ def ikuuu_checkin_cookie(cookie_str):
     
     # 第一次尝试：带 SSL 验证
     try:
-        r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data='', timeout=15, verify=True)
+        r = requests.post('https://ikuuu.fyi/user/checkin', headers=h, data='', timeout=15, verify=True)
         
         if r.status_code == 200:
             try:
@@ -267,7 +267,7 @@ def ikuuu_checkin_cookie(cookie_str):
         else:
             return f"HTTP {r.status_code}", False
     except requests.exceptions.SSLError as e:
-        log(f"  ⚠️ ikuuu Cookie 模式：SSL 握手失败 — ikuuu.nl 可能拒绝了我们的 TLS 指纹")
+        log(f"  ⚠️ ikuuu Cookie 模式：SSL 握手失败 — ikuuu.fyi 可能拒绝了我们的 TLS 指纹")
         return "SSL 握手失败（建议使用账号密码模式或本地运行）", False
     except requests.exceptions.Timeout:
         return "请求超时", False
