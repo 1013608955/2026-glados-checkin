@@ -1,4 +1,4 @@
-# 2026多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + VOAPI)
+# 2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)
 
 本项目是一个自动签到脚本，支持并发签到多个平台。
 
@@ -7,9 +7,8 @@
 | 平台 | 状态 | 特性 |
 |------|------|------|
 | GLaDOS | ✅ 完全支持 | 网络超级连接、主机测试、分数签到 |
-| ikuuu | ✅ 完全支持 | VPN服务器签到、会员管理（支持 Cookie 模式，绕过验证码） |
+| ikuuu | ✅ 完全支持 | VPN 服务器签到、会员管理（支持 Cookie 模式，绕过验证码） |
 | SMAI.AI | ✅ 完全支持 | 科学上网服务、实验机、网络分数 |
-| VOAPI | ✅ 完全支持 | API平台签到、余额查询 |
 
 ## 特性功能
 
@@ -70,28 +69,18 @@ SMAI_SESSION="session1&session2"
 SMAI_USER_ID="uid1&uid2"
 ```
 
-#### VOAPI
-```bash
-VOAPI_TOKEN="your_token_here"
-# 多账号用 & 分隔
-VOAPI_TOKEN="token1&token2"
-```
-
 ### 例子配置
 
 ```bash
-# 一个GLaDOS账号
+# 一个 GLaDOS 账号
 GLADOS_COOKIE="koa:sess=abc123..."
 
-# 两个ikuuu账号（Cookie模式）
+# 两个 ikuuu 账号（Cookie 模式）
 IKUUU_COOKIE="uid=123; email=a@qq.com; key=aaa; ip=bbb; expire_in=111&uid=456; email=b@qq.com; key=ccc; ip=ddd; expire_in=222"
 
-# 一个SMAI账号
+# 一个 SMAI 账号
 SMAI_SESSION="session_abc123..."
 SMAI_USER_ID="123456789"
-
-# 一个VOAPI账号
-VOAPI_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 ### GitHub Actions 部署
@@ -132,9 +121,10 @@ VOAPI_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 ## 更新历史
 
+- **2026-04-14**: 移除 VOAPI 模块 + 修复北京时间计算错误（使用 UTC→UTC+8 timezone 转换）
 - 2026-04-05: ikuuu 改为 Cookie 模式，绕过登录验证码
 - 2026-03-26: 合并 VOAPI 签到功能，支持多账号签到
-- 2026-03-21: 修复SMAI额度单位转换问题，使显示的额度与网站一致
+- 2026-03-21: 修复 SMAI 额度单位转换问题，使显示的额度与网站一致
 
 ---
 

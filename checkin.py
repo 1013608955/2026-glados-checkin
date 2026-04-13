@@ -230,26 +230,46 @@ def ikuuu_pwd_login(email, pwd):
 
 def ikuuu_checkin_cookie(cookie_str):
     """Cookie 模式签到：直接 POST /user/checkin，绕过登录验证码"""
-    h = COMMON_HEADERS.copy()
-    h['Cookie'] = cookie_str
-    h['Origin'] = 'https://ikuuu.nl'
-    h['Referer'] = 'https://ikuuu.nl/user'
-    h['Accept'] = 'application/json, text/javascript, */*; q=0.01'
-    h['Accept-Language'] = 'zh-CN,zh;q=0.9'
-    h['X-Requested-With'] = 'XMLHttpRequest'
-    try:
-        r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data={}, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            msg = data.get('msg', data.get('message', '未知结果'))
-            log(f"  ikuuu Cookie 签到: {msg}")
-            ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
-            return msg, ok
-        else:
-            log(f"  ikuuu Cookie 签到 HTTP {r.status_code}: {r.text[:100]}")
-            return f"HTTP {r.status_code}", False
-    except Exception as e:
-        return str(e), False
+    h = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Content-Type': 'application/json;charset=UTF-8',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': cookie_str,
+        'Origin': 'https://ikuuu.nl',
+        'Referer': 'https://ikuuu.nl/user',
+        'sec-ch-ua': '"Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+    }
+    
+    # 尝试带 SSL 验证的请求
+    for retry in range(2):
+        try:
+            r = requests.post('https://ikuuu.nl/user/checkin', headers=h, data={}, timeout=15, verify=(retry == 0))
+            if r.status_code == 200:
+                data = r.json()
+                msg = data.get('msg', data.get('message', '未知结果'))
+                log(f"  ikuuu Cookie 签到：{msg}")
+                ok = "成功" in msg or "获得" in msg or "已经签到" in msg or "似乎已经签到过了" in msg or "已签到" in msg
+                return msg, ok
+            else:
+                log(f"  ikuuu Cookie 签到 HTTP {r.status_code}: {r.text[:100]}")
+                return f"HTTP {r.status_code}", False
+        except requests.exceptions.SSLError as e:
+            if retry == 0:
+                log(f"  ikuuu SSL 握手失败，降级重试...")
+                continue
+            else:
+                return f"SSL 错误：{str(e)[:50]}", False
+        except Exception as e:
+            return str(e), False
+    
+    return "请求失败（SSL 降级后仍不可用）", False
 
 # ================= SMAI =================
 def smai_one(session, uid_hint=''):
