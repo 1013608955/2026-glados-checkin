@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + VOAPI)
+2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)
 功能：
-- GLaDOS / ikuuu / SMAI.AI / VOAPI 全自动签到
+- GLaDOS / ikuuu / SMAI.AI 全自动签到
 - 多账号支持（& 分隔）
 - 按账号级别：上午成功 → 下午跳过该账号
 - Token 过期自动检测 + 警告推送
@@ -29,9 +29,17 @@ SMAI_API = "https://api.smai.ai"
 STATE_FILE = os.environ.get("CHECKIN_STATE_FILE", ".checkin_state.json")
 
 # ================= 工具函数 =================
+def get_beijing_time():
+    """获取当前北京时间"""
+    from datetime import datetime, timezone, timedelta
+    # GitHub Actions runner 通常是 UTC 时区
+    # 正确方式：从 UTC 转换为北京时间 (UTC+8)
+    utc_now = datetime.now(timezone.utc)
+    beijing_tz = timezone(timedelta(hours=8))
+    return utc_now.astimezone(beijing_tz)
+
 def log(msg):
-    # 修改：使用北京时间打印日志
-    beijing_time = datetime.now() + timedelta(hours=8)
+    beijing_time = get_beijing_time()
     print(f"[{beijing_time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 def extract_cookie(raw):
@@ -91,8 +99,8 @@ def load_state():
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-                # 修改：用北京时间判断日期
-                beijing_date = (datetime.now() + timedelta(hours=8)).date()
+                # 用北京时间判断日期
+                beijing_date = get_beijing_time().date()
                 if state.get('date') == str(beijing_date):
                     # 清洗旧格式：morning 下所有 value 必须是 dict
                     for k, v in state.get('morning', {}).items():
@@ -100,8 +108,8 @@ def load_state():
                             state['morning'][k] = {}
                     return state
     except: pass
-    # 修改：用北京时间初始化日期
-    beijing_date = (datetime.now() + timedelta(hours=8)).date()
+    # 用北京时间初始化日期
+    beijing_date = get_beijing_time().date()
     return {'date': str(beijing_date), 'morning': {}}
 
 def save_state(state):
@@ -274,7 +282,7 @@ def smai_one(session, uid_hint=''):
         # 查询签到状态
         r = subprocess.run([
             'curl', '-s', '--max-time', '15',
-            f'{SMAI_API}/api/user/checkin?year={(datetime.now() + timedelta(hours=8)).year}',
+            f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
             '-H', 'Accept: application/json',
             '-H', f'New-Api-User: {uid}',
             '-H', f'Cookie: session={session}',
@@ -308,7 +316,7 @@ def smai_one(session, uid_hint=''):
             # 查询最新统计
             r2 = subprocess.run([
                 'curl', '-s', '--max-time', '15',
-                f'{SMAI_API}/api/user/checkin?year={(datetime.now() + timedelta(hours=8)).year}',
+                f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
                 '-H', 'Accept: application/json',
                 '-H', f'New-Api-User: {uid}',
                 '-H', f'Cookie: session={session}',
@@ -344,83 +352,10 @@ def smai_one(session, uid_hint=''):
     except Exception as e:
         return str(e), False, {}
 
-# ================= VOAPI =================
-class VOAPI:
-    def __init__(self, token):
-        self.token = token
-        self.email = "未知账号"
-        self.left_days = "?"
-        self.points = "?"
-        self.checkin_msg = "执行失败"
-        self.success = False
 
-    def req(self, method, path, data=None):
-        """发送请求到 VOAPI"""
-        try:
-            h = COMMON_HEADERS.copy()
-            h.update({
-                'Authorization': self.token,
-                'Origin': 'https://demo.voapi.top',
-                'Referer': 'https://demo.voapi.top/checkIn?_userMenuKey=checkIn',
-            })
-            r = requests.request(method, f'https://demo.voapi.top{path}', headers=h, json=data, timeout=10)
-            if r.status_code == 200:
-                return r.json()
-            else:
-                log(f"  VOAPI 请求失败: {r.status_code} - {r.text[:100]}")
-                return None
-        except Exception as e:
-            log(f"  VOAPI 请求异常: {e}")
-            return None
-
-    def checkin(self):
-        """执行签到"""
-        r = self.req('POST', '/api/check_in')
-        if r:
-            # VOAPI 返回格式: {"code": 1, "msg": "Signed in today"}
-            # code=1 表示签到成功或已签到
-            code = r.get('code', 0)
-            self.checkin_msg = r.get('msg', r.get('message', '签到完成'))
-            self.success = (code in (0, 1)) or '成功' in self.checkin_msg or '签到完成' in self.checkin_msg or 'already' in self.checkin_msg.lower() or 'signed in' in self.checkin_msg.lower()
-        else:
-            self.checkin_msg = "网络错误或 Token 过期"
-
-    def load_info(self):
-        """加载用户信息"""
-        r = self.req('GET', '/api/user/info')
-        if r and r.get('code') == 0 and 'data' in r:
-            data = r['data']
-            self.email = data.get('username', data.get('email', '?'))
-            # 计算总余额: basicBalance + bindBalance
-            basic = data.get('basicBalance', '0')
-            bind = data.get('bindBalance', '0')
-            try:
-                total = float(basic) + float(bind)
-                self.points = f"{total:.6f}".rstrip('0').rstrip('.') if total > 0 else '0'
-            except:
-                self.points = basic or bind or '?'
-        elif r and 'username' in r:
-            # 有些 API 直接返回用户数据（无 code 包装）
-            self.email = r.get('username', r.get('email', '?'))
-            self.points = str(r.get('basicBalance', r.get('balance', r.get('points', '?'))))
-
-    def text(self):
-        """生成结果文本"""
-        status = "✅" if self.success else "❌"
-        return f"### 🌐 VOAPI 签到结果\n• 账号：{self.email}\n• 签到：{status} {self.checkin_msg}\n• 余额：{self.points}"
-
-def get_voapi_tokens():
-    """从环境变量获取 VOAPI Token"""
-    raw = os.environ.get("VOAPI_TOKEN", "")
-    if not raw:
-        return []
-    # 支持多账号（& 分隔）
-    return [t.strip() for t in (raw.split('\n') if '\n' in raw else raw.split('&')) if t.strip()]
-
-# ================= 主程序 =================
 def main():
-    # 修改：获取北京时间，替代本地时间
-    beijing_time = datetime.now() + timedelta(hours=8)
+    # 获取北京时间
+    beijing_time = get_beijing_time()
     is_morning = beijing_time.hour < 15  # 北京时间 0-15 点为上午，15-24 点为下午
 
     log("=" * 50)
@@ -437,13 +372,12 @@ def main():
     ikuuu_accounts = get_ikuuu_accounts()
     smai_sessions = get_smai_sessions()
     smai_user_ids = get_smai_user_ids()
-    voapi_tokens = get_voapi_tokens()
+    voapi_tokens = []  # VOAPI 已移除
     config = {
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
         # ikuuu: cookie 用 "cookie_N" 做 key，密码用 email 做 key
         'ikuuu': [f"cookie_{i+1}" if mode == 'cookie' else email for i, (mode, val) in enumerate(ikuuu_accounts) for email in [val[0] if isinstance(val, tuple) else val]],
         'smai': [s[:20]+"..." for s in smai_sessions],
-        'voapi': [t[:20]+"..." for t in voapi_tokens],
     }
 
     # 下午：全部成功则跳过
@@ -536,41 +470,16 @@ def main():
     else:
         results.append("• 未配置，跳过")
 
-    # ========== VOAPI ==========
-    voapi_tokens = get_voapi_tokens()
-    v_success = 0; v_total = len(voapi_tokens)
-    if voapi_tokens:
-        for i, token in enumerate(voapi_tokens):
-            key = token[:20] + "..."
-            if is_skipped(state, 'voapi', key, is_morning):
-                results.append(f"\n### 🌐 VOAPI 签到结果")
-                results.append(f"• 账号{i+1}: 上午已签，跳过")
-                v_success += 1
-            else:
-                log(f"  VOAPI 签到... (账号{i+1})")
-                v = VOAPI(token)
-                v.checkin()
-                if v.success:
-                    record_success(state, 'voapi', key)
-                    v_success += 1
-                elif is_expired('voapi', v.checkin_msg):
-                    expired.append(f"🌐 VOAPI [账号{i+1}] Token 可能过期")
-                v.load_info()
-                results.append(v.text())
-    else:
-        results.append("\n### 🌐 VOAPI\n未配置，跳过")
-
     save_state(state)
 
     # ========== 推送 ==========
     # 汇总统计
-    total_done = g_success + i_success + s_success + v_success
-    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0) + (v_total if v_total else 0)
+    total_done = g_success + i_success + s_success
+    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0)
     summary = f"📊 汇总：{total_done}/{total_all} 成功"
     if g_total: summary += f" | GLaDOS {g_success}/{g_total}"
     if i_total: summary += f" | ikuuu {i_success}/{i_total}"
     if s_total: summary += f" | SMAI {s_success}/{s_total}"
-    if v_total: summary += f" | VOAPI {v_success}/{v_total}"
 
     body = ""
     if expired:
