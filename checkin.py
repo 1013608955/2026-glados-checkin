@@ -144,13 +144,25 @@ def all_done(state, config):
 # ================= Token 过期检测 =================
 EXPIRED_KEYWORDS = {
     'glados': ['unauthorized', 'login', '请重新登录', 'invalid token', '401'],
-    'ikuuu': ['密码错误', '用户不存在', '登录失败', 'unauthorized', '401'],
+    'ikuuu': ['密码错误', '用户不存在', '登录失败', 'unauthorized', '401', '403', '405'],
     'smai': ['未登录', '无权', 'unauthorized', '401', 'expired', '过期', '未提供'],
 }
 
 def is_expired(platform, msg):
     if not msg or msg == '未配置': return False
     return any(k in msg.lower() for k in EXPIRED_KEYWORDS.get(platform, []))
+
+def diagnose_ikuuu_error(msg):
+    """ikuuu 错误智能诊断 - 给用户提供 actionable 的建议"""
+    if '405' in msg:
+        return "⚠️ HTTP 405 (方法不允许) — Cookie 可能失效或 API 已变更，建议刷新 Cookie"
+    elif '401' in msg:
+        return "⚠️ HTTP 401 (未授权) — Cookie 已过期，请重新获取"
+    elif '403' in msg:
+        return "⚠️ HTTP 403 (被拦截) — 可能是 Cloudflare 防护，尝试账号密码模式"
+    elif '超时' in msg:
+        return "⏰ 网络超时 — GitHub Actions runner 可能在中国大陆，建议本地运行"
+    return None
 
 # ================= 推送 =================
 def wpush(apikey, title, content):
@@ -496,12 +508,17 @@ def main():
                 i_success += 1
             elif mode == 'cookie':
                 msg, ok = ikuuu_checkin_cookie(val)
-                msgs.append(f"{display}: {msg}")
+                msgs.append(f"• {display}: {msg}")
                 if ok:
                     record_success(state, 'ikuuu', key)
                     i_success += 1
                 elif is_expired('ikuuu', msg):
-                    expired.append(f"📶 ikuuu [{display}] Cookie 可能过期")
+                    # 智能诊断
+                    diagnosis = diagnose_ikuuu_error(msg)
+                    if diagnosis:
+                        expired.append(f"📶 ikuuu [{display}] {diagnosis}")
+                    else:
+                        expired.append(f"📶 ikuuu [{display}] Cookie 可能过期")
             else:
                 email_val, pwd_val = val
                 msg, ok = ikuuu_pwd_login(email_val, pwd_val)
