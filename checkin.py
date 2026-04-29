@@ -20,7 +20,7 @@ if sys.platform.startswith('win'):
 
 # ================= 全局配置 =================
 GLADOS_DOMAINS = ["https://glados.cloud", "https://glados.rocks", "https://glados.network"]
-IKUUU_DOMAINS = ["https://ikuuu.fyi", "https://ikuuu.nl"]  # .fyi 为主，.nl 为备用
+IKUUU_DOMAINS = ["https://ikuuu.win", "https://ikuuu.fyi"]  # .win 为主，.fyi 为备用
 COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Content-Type': 'application/json;charset=UTF-8',

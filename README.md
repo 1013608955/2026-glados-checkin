@@ -16,7 +16,7 @@
 - ✅ **按账号级别签到**：成功了下午就不再签到该账号
 - ✅ **Token 过期自动检测**：检测平台会话或 Cookie 过期
 - ✅ **GLaDOS 多域名容错**：3 个域名自动轮询（cloud/rocks/network）
-- ✅ **ikuuu 双域名备用**：主域名 .fyi + 备用 .nl，自动切换
+- ✅ **ikuuu 双域名备用**：主域名 .win + 备用 .fyi，自动切换
 - ✅ **实时日志**：使用北京时间，精确到分钟的签到情况
 - ✅ **微信推送**：支持微信推送，让你实时知道签到成功
 
@@ -33,13 +33,13 @@ GLADOS_COOKIE="koa:sess=cookie1...&koa:sess=cookie2..."
 
 #### ikuuu（推荐 Cookie 模式）
 
-**⚠️ 重要：ikuuu.nl 已停止服务，请使用新域名 https://ikuuu.fyi/**
+**⚠️ 重要：ikuuu 最新域名为 https://ikuuu.win（.fyi 作为备用）**
 
 **ikuuu 已启用登录验证码，账号密码模式会失败，请使用 Cookie 模式。**
 
 **如何获取 Cookie（方案一：浏览器开发者工具）**
 
-1. 用 Chrome/Edge 登录 ikuuu：**https://ikuuu.fyi** （旧域名 .nl 已挂）
+1. 用 Chrome/Edge 登录 ikuuu：**https://ikuuu.win**（如无法访问则尝试备用域名 .fyi）
 2. 按 `F12` 打开开发者工具
 3. 切到 **Network**（网络）标签页
 4. 刷新页面（F5），在请求列表里点第一个请求（通常是 `ikuuu.fyi` 或 `user`）
@@ -121,6 +121,7 @@ SMAI_USER_ID="123456789"
 - 签到成功后会记录状态，避免重复签到
 - 支持微信推送，让你实时知道签到成功
 - ikuuu 支持 Cookie 模式，绕过登录验证码
+- ikuuu 域名已切换：主域名 .win + 备用 .fyi（.nl 已挂）
 
 ## 更新历史
 
