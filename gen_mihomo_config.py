@@ -50,7 +50,12 @@ def main():
         raise SystemExit("W42_SUB 未设置，无法生成 mihomo 配置")
 
     node = (os.environ.get("W42_SUB_NODE") or "").strip() or DEFAULT_NODE
-    print(f"[gen] 下载订阅: {sub[:64]}...")
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(sub).netloc or sub.split('/')[0]
+    except Exception:
+        host = sub.split('/')[0]
+    print(f"[gen] 下载订阅: {host} （已脱敏，不打印完整链接以避免泄露订阅 token）")
     raw = fetch_subscription(sub)
     print(f"[gen] 订阅大小: {len(raw)} 字符")
 

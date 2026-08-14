@@ -149,6 +149,15 @@ W42_SUB="https://your-clash-subscribe-link"
 • ...
 ```
 
+## 安全须知
+
+- **⚠️ CDP 调试端口零鉴权**：`cdp_get_cookies.py` 通过 `ws://127.0.0.1:9222` 读取 Chrome Cookie。启动 Chrome 时必须带 `--remote-debugging-port=9222 --remote-allow-origins=*`，而**该端口没有任何鉴权**，且 `*` 允许任意网页源连接。在共享 / 多用户机器上，本地恶意网页或其它用户进程可连上读取全部 Cookie、注入 JS。
+  - ✅ **抓完 Cookie 后立即关闭该 Chrome 实例**，不要长期挂着调试端口。
+  - 🔐 更安全的替代方案是用 `--remote-debugging-pipe`（不走网络端口，无此风险），但这需要改造 `_ws.py` 走 stdio pipe，目前尚未实现。
+- **`REPO_PAT` 建议用细粒度令牌**：自动回写 SMAI token 用的 PAT，建议改为**细粒度令牌**，仅授予本仓库 `Secrets: write`，不要用全 `repo` 作用域（否则一旦泄露可读写本仓所有 Secret、推代码）。当前 SMAI 已暂停，也可直接不配置 `REPO_PAT`。
+- **工作流第三方 action 已 pin 到 commit SHA**：`checkin.yml` 里的 action 锁定到具体 commit，避免 tag 被劫持导致的供应链攻击；并声明了最小 `permissions`（仅 `contents: read` + `actions: write`）。
+- **日志不含明文凭证**：脚本只记录签到结果消息，不回显 Cookie / token；CI 日志中的订阅链接也已脱敏（只打印域名）。
+
 ## 故障排除
 
 ### 平台访问异常

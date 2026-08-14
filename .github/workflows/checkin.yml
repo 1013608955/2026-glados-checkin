@@ -7,20 +7,43 @@ on:
     # 北京时间 19:30 (UTC 11:30) - 下午签到
     - cron: '30 11 * * *'
   workflow_dispatch:
-  push:
-    branches: [main]
+
+# 最小权限：本工作流只用 GITHUB_TOKEN 做 checkout + 上传日志 artifact；
+# SMAI token 回写走用户自备的 REPO_PAT（建议细粒度令牌，仅本仓 Secrets: write）。
+permissions:
+  contents: read
+  actions: write
+
+# 防止重叠运行（定时/手动同时触发时排队，不互相打断导致重复签到）
+concurrency:
+  group: checkin-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   checkin:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # 所有步骤共用同一套 Secret 环境，避免「Run / Retry」两步各写一遍导致漏配
+    env:
+      GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
+      WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
+      IKUUU_COOKIE: ${{ secrets.IKUUU_COOKIE }}
+      SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
+      SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
+      SMAI_REFRESH: ${{ secrets.SMAI_REFRESH }}
+      W42_COOKIE: ${{ secrets.W42_COOKIE }}
+      W42_UID: ${{ secrets.W42_UID }}
+      W42_PROXY: ${{ secrets.W42_PROXY }}
+      W42_SUB: ${{ secrets.W42_SUB }}
+      W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
+      REPO_PAT: ${{ secrets.REPO_PAT }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -29,7 +52,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Restore Checkin State
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .checkin_state.json
           key: checkin-state-${{ github.run_id }}
@@ -44,6 +67,25 @@ jobs:
             VER=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep -oP '"tag_name": "\K[^"]+')
             echo "mihomo 版本: $VER"
             curl -sL "https://github.com/MetaCubeX/mihomo/releases/download/$VER/mihomo-linux-amd64-$VER.gz" -o mihomo.gz
+            # 校验官方 SHA256，防供应链投毒 / 传输损坏
+            curl -sL "https://github.com/MetaCubeX/mihomo/releases/download/$VER/checksums.txt" -o checksums.txt
+            if [ -s checksums.txt ]; then
+              EXPECT=$(grep -m1 -F "mihomo-linux-amd64-$VER.gz" checksums.txt | awk '{print $1}')
+              ACTUAL=$(sha256sum mihomo.gz | awk '{print $1}')
+              if [ -n "$EXPECT" ]; then
+                echo "期望 SHA256: $EXPECT"
+                echo "实际 SHA256: $ACTUAL"
+                if [ "$EXPECT" != "$ACTUAL" ]; then
+                  echo "❌ mihomo 校验和不匹配，疑似下载被篡改，终止！"
+                  exit 1
+                fi
+                echo "✅ mihomo SHA256 校验通过"
+              else
+                echo "⚠️ checksums.txt 中未找到对应条目，跳过校验（不阻断）"
+              fi
+            else
+              echo "⚠️ 未取到 checksums.txt，跳过校验（不阻断）"
+            fi
             gunzip -f mihomo.gz && chmod +x mihomo
           fi
           ./mihomo -v || true
@@ -52,20 +94,6 @@ jobs:
         id: checkin
         run: bash run_checkin.sh
         timeout-minutes: 8
-        env:
-          GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
-          WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
-          IKUUU_COOKIE: ${{ secrets.IKUUU_COOKIE }}
-          SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
-          SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
-          SMAI_REFRESH: ${{ secrets.SMAI_REFRESH }}
-          VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}
-          W42_COOKIE: ${{ secrets.W42_COOKIE }}
-          W42_UID: ${{ secrets.W42_UID }}
-          W42_PROXY: ${{ secrets.W42_PROXY }}
-          W42_SUB: ${{ secrets.W42_SUB }}
-          W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
-          REPO_PAT: ${{ secrets.REPO_PAT }}
 
       - name: Check Skip Afternoon
         id: skip_check
@@ -84,17 +112,14 @@ jobs:
           sleep 60
           bash run_checkin.sh
         timeout-minutes: 5
-        env:
-          GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
-          WPUSH_APIKEY: ${{ secrets.WPUSH_APIKEY }}
-          IKUUU_COOKIE: ${{ secrets.IKUUU_COOKIE }}
-          SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
-          SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
-          SMAI_REFRESH: ${{ secrets.SMAI_REFRESH }}
-          VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}
-          W42_COOKIE: ${{ secrets.W42_COOKIE }}
-          W42_UID: ${{ secrets.W42_UID }}
-          W42_PROXY: ${{ secrets.W42_PROXY }}
-          W42_SUB: ${{ secrets.W42_SUB }}
-          W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
-          REPO_PAT: ${{ secrets.REPO_PAT }}
+
+      - name: Upload Debug Logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checkin-debug-${{ github.run_id }}
+          path: |
+            checkin_output.txt
+            mihomo.log
+          if-no-files-found: ignore
+          retention-days: 7

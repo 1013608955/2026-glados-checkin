@@ -14,7 +14,7 @@ if [ -n "$W42_SUB" ]; then
   echo "mihomo PID=$MH_PID，等待端口 7890 ..."
   READY=0
   for i in $(seq 1 40); do
-    if curl -s -x http://127.0.0.1:7890 https://api.42w.shop >/dev/null 2>&1; then
+    if curl -s -x http://127.0.0.1:7890 https://www.gstatic.com/generate_204 >/dev/null 2>&1; then
       echo "mihomo 就绪 (端口 7890)"; READY=1; break
     fi
     sleep 1
@@ -23,7 +23,6 @@ if [ -n "$W42_SUB" ]; then
     echo "⚠️ mihomo 端口未就绪，查看 mihomo.log："
     tail -20 mihomo.log 2>/dev/null || true
   fi
-  echo "mihomo 出口 IP: $(curl -s -x http://127.0.0.1:7890 https://api.ipify.org 2>/dev/null || echo '获取失败')"
   export W42_PROXY=http://127.0.0.1:7890
 fi
 
