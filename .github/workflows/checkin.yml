@@ -64,6 +64,8 @@ jobs:
           W42_PROXY: ${{ secrets.W42_PROXY }}
           W42_SUB: ${{ secrets.W42_SUB }}
           W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
+          W42_NODE_FILTER: ${{ secrets.W42_NODE_FILTER }}
+          W42_PROBE_MAX: ${{ secrets.W42_PROBE_MAX }}
 
       - name: Check Skip Afternoon
         id: skip_check
@@ -94,3 +96,5 @@ jobs:
           W42_PROXY: ${{ secrets.W42_PROXY }}
           W42_SUB: ${{ secrets.W42_SUB }}
           W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
+          W42_NODE_FILTER: ${{ secrets.W42_NODE_FILTER }}
+          W42_PROBE_MAX: ${{ secrets.W42_PROBE_MAX }}

@@ -24,6 +24,8 @@ if [ -n "$W42_SUB" ]; then
     tail -20 mihomo.log 2>/dev/null || true
   fi
   python list_and_pin.py || true
+  # 自动探测：逐个节点试到能过 Cloudflare 的那个并钉住
+  python probe_and_pin.py || true
   export W42_PROXY=http://127.0.0.1:7890
 fi
 
