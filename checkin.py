@@ -518,7 +518,14 @@ def w42_one(cookie, uid_hint=''):
             return f"今日已签到 (今日 +{today_q}，累计 {total_q}，共 {total_days} 天)", True, detail
         return msg, False, detail
     except Exception as e:
-        return f"{type(e).__name__}: {str(e)[:60]}", False, {}
+        msg = f"{type(e).__name__}: {str(e)[:120]}"
+        # Cloudflare 在 GitHub 数据中心 IP 上直接 403 拦截（cf-ray 头可见），
+        # Cookie 本身没问题，是出口 IP 被拦。给出可操作的提示而非笼统报错。
+        if 'cf-ray' in msg or ('403' in msg and '非JSON' in msg):
+            msg = ("⛔ 42w 被 Cloudflare 拦截 (HTTP 403)：GitHub 数据中心 IP 通常被拦，"
+                   "Cookie 本身有效。解决：① 配置 W42_PROXY 指向 Cloudflare 信任的出口 IP"
+                   "（本机 Clash 无法从 GitHub 访问）；② 或改用本机定时任务跑 42w。")
+        return msg, False, {}
 
 
 def main():
