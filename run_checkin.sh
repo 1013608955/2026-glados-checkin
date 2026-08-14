@@ -23,6 +23,7 @@ if [ -n "$W42_SUB" ]; then
     echo "⚠️ mihomo 端口未就绪，查看 mihomo.log："
     tail -20 mihomo.log 2>/dev/null || true
   fi
+  echo "mihomo 出口 IP: $(curl -s -x http://127.0.0.1:7890 https://api.ipify.org 2>/dev/null || echo '获取失败')"
   export W42_PROXY=http://127.0.0.1:7890
 fi
 
