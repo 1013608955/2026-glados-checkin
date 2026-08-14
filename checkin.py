@@ -13,6 +13,7 @@ import requests
 import json
 import os
 import sys
+import re
 from datetime import datetime, date, timedelta  # 新增：导入 timedelta
 
 if sys.platform.startswith('win'):
@@ -94,6 +95,38 @@ def get_smai_user_ids():
     raw = os.environ.get('SMAI_USER_ID', '')
     if not raw: return []
     return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
+
+def get_smai_refresh():
+    """读取 SMAI 长期刷新令牌 new_api_refresh（用于签到前续期）。"""
+    raw = os.environ.get('SMAI_REFRESH', '')
+    if not raw: return []
+    return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
+
+def persist_smai_refresh(new_list):
+    """把轮换后的 new_api_refresh 写回文件，若配置了 PAT 则直接更新 GitHub Secret。
+    注意：SMAI 的 refresh 会【轮换】令牌（旧 token 失效），故必须把新 token 持久化，
+    否则下次运行会因 AUTH_SESSION_REVOKED 而失败。"""
+    try:
+        with open('smai_refresh_latest.txt', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(new_list))
+        log("  SMAI 新 refresh token 已写入 smai_refresh_latest.txt")
+    except Exception as e:
+        log(f"  ⚠️ 写入 smai_refresh_latest.txt 失败: {e}")
+    pat = os.environ.get('SMAI_PERSIST_PAT') or os.environ.get('REPO_PAT')
+    if pat:
+        try:
+            import subprocess
+            env = dict(os.environ)
+            env['GH_TOKEN'] = pat
+            env['GITHUB_TOKEN'] = pat
+            subprocess.run(['gh', 'secret', 'set', 'SMAI_REFRESH', '--body', '\n'.join(new_list)],
+                           env=env, check=True, timeout=90,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            log("  ✅ SMAI_REFRESH 已自动持久化到 GitHub Secret（无需手动更新）")
+        except Exception as e:
+            log(f"  ⚠️ 自动持久化失败（请手动把 smai_refresh_latest.txt 内容更新到 SMAI_REFRESH Secret）：{e}")
+    else:
+        log("  ℹ️ 未配置 PAT（SMAI_PERSIST_PAT/REPO_PAT）：请手动把 smai_refresh_latest.txt 内容更新到 SMAI_REFRESH Secret，或重新抓取 new_api_refresh")
 
 def get_w42_cookies():
     raw = os.environ.get('W42_COOKIE', '')
@@ -344,65 +377,105 @@ def ikuuu_checkin_cookie(cookie_str):
     return "所有域名均不可用", False
 
 # ================= SMAI =================
-def smai_one(session, uid_hint=''):
-    """单个 SMAI 账号签到 - 返回详细信息"""
-    try:
-        import subprocess
+def smai_one(session, uid_hint='', refresh_token=''):
+    """单个 SMAI 账号签到 - 返回 (msg, ok, detail)
 
-        # 清理 session 中的重复前缀（用户可能粘贴了 "session=xxx" 格式的完整 cookie）
+    鉴权机制（实测自浏览器真实流量）：
+    - session 是短效 Flask 签名 cookie，单独打 API 必 401（"invalid access token"）。
+    - 签到前必须先 POST /api/user/auth/refresh（携带长期 new_api_refresh cookie）
+      续期；续期成功后，原 session cookie 才会被服务端接受（与浏览器行为一致）。
+    - refresh 会【轮换】new_api_refresh（旧 token 失效），新 token 通过 Set-Cookie
+      返回；调用方需把它持久化回 Secret（见 persist_smai_refresh）。
+    detail 中可能携带 'new_refresh' 供上层持久化。
+    """
+    detail = {'username': uid_hint or '未知'}
+    try:
         if session.startswith('session='):
             session = session[8:].strip()
-        
-        # 确定 user_id
+
+        base_headers = {
+            'Accept': 'application/json',
+            'User-Agent': COMMON_HEADERS['User-Agent'],
+            'Origin': SMAI_API,
+            'Referer': SMAI_API + '/',
+        }
+
+        # ---------- 1) refresh 续期 ----------
+        access_token = ''
+        if refresh_token:
+            if refresh_token.startswith('new_api_refresh='):
+                refresh_token = refresh_token[len('new_api_refresh='):].strip()
+            try:
+                r = requests.post(
+                    f'{SMAI_API}/api/user/auth/refresh',
+                    cookies={'new_api_refresh': refresh_token, 'session': session},
+                    headers=base_headers, timeout=15,
+                )
+                log(f"  SMAI refresh HTTP {r.status_code}")
+                sc = r.headers.get('Set-Cookie', '')
+                m = re.search(r'new_api_refresh=([^;,\s]+)', sc)
+                if m:
+                    detail['new_refresh'] = m.group(1)
+                    log(f"  SMAI 已取得新 refresh token（待持久化）")
+                try:
+                    access_token = r.json().get('data', {}).get('access_token', '')
+                except Exception:
+                    pass
+                if r.status_code != 200:
+                    log(f"  ⚠️ SMAI refresh 失败：{r.text[:160]}")
+            except Exception as e:
+                log(f"  ⚠️ SMAI refresh 异常：{type(e).__name__}: {e}")
+        else:
+            log("  ⚠️ 未配置 SMAI_REFRESH：无法续期，签到大概率 401（请在 Secrets 补充 new_api_refresh）")
+
+        auth_headers = dict(base_headers)
+        auth_headers['Content-Type'] = 'application/json'
+        if access_token:
+            auth_headers['Authorization'] = f'Bearer {access_token}'
+
+        # ---------- 2) 确定 user_id ----------
         uid = uid_hint
         username = uid_hint or '未知'
         if not uid:
-            r = subprocess.run([
-                'curl', '-s', '--max-time', '15',
-                f'{SMAI_API}/api/user/self',
-                '-H', 'Accept: application/json',
-                '-H', f'Cookie: session={session}',
-                '-H', 'User-Agent: Mozilla/5.0'
-            ], capture_output=True, timeout=20)
-            info = json.loads(r.stdout.decode('utf-8', errors='replace'))
-            if info.get('success') and info.get('data', {}).get('id'):
-                uid = str(info['data']['id'])
-                username = info['data'].get('username', uid)
-                log(f"  SMAI 用户: {username} (ID: {uid})")
-            else:
-                msg = info.get('message', '未知错误')
-                log(f"  SMAI 获取用户信息失败: {msg}")
-                log(f"  💡 请在 GitHub Secrets 中添加 SMAI_USER_ID (你的用户ID)")
-                return msg, False, {}
+            try:
+                r = requests.get(f'{SMAI_API}/api/user/self',
+                                 cookies={'session': session},
+                                 headers=auth_headers, timeout=15)
+                info = r.json()
+                if info.get('success') and info.get('data', {}).get('id'):
+                    uid = str(info['data']['id'])
+                    username = info['data'].get('username', uid)
+                    log(f"  SMAI 用户: {username} (ID: {uid})")
+                else:
+                    msg = info.get('message', '未知错误')
+                    log(f"  SMAI 获取用户信息失败: {msg}")
+                    log(f"  💡 请在 GitHub Secrets 中添加 SMAI_USER_ID (你的用户ID)")
+                    return msg, False, detail
+            except Exception as e:
+                log(f"  SMAI 获取用户异常: {e}")
+                return str(e), False, detail
+        detail['username'] = username
 
-        # 查询签到状态
-        r = subprocess.run([
-            'curl', '-s', '--max-time', '15',
-            f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
-            '-H', 'Accept: application/json',
-            '-H', f'Smai-Api-User: {uid}',
-            '-H', f'Cookie: session={session}',
-            '-H', 'User-Agent: Mozilla/5.0'
-        ], capture_output=True, timeout=20)
-        stats = json.loads(r.stdout.decode('utf-8', errors='replace'))
-        if stats.get('success') and stats.get('data', {}).get('checked_in_today'):
-            return "今日已签到", True, {'username': username}
+        # ---------- 3) 查询签到状态 ----------
+        try:
+            r = requests.get(f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
+                             cookies={'session': session},
+                             headers={**auth_headers, 'Smai-Api-User': uid}, timeout=15)
+            stats = r.json()
+            if stats.get('success') and stats.get('data', {}).get('checked_in_today'):
+                return "今日已签到", True, detail
+        except Exception as e:
+            log(f"  SMAI 查状态异常: {e}")
 
-        # 执行签到
-        r = subprocess.run([
-            'curl', '-s', '--max-time', '15', '-X', 'POST',
-            f'{SMAI_API}/api/user/checkin',
-            '-H', 'Accept: application/json',
-            '-H', 'Content-Type: application/json',
-            '-H', f'Smai-Api-User: {uid}',
-            '-H', f'Cookie: session={session}',
-            '-H', 'User-Agent: Mozilla/5.0',
-            '-H', f'Origin: {SMAI_API}',
-            '-d', '{}'
-        ], capture_output=True, timeout=20)
-        result = json.loads(r.stdout.decode('utf-8', errors='replace'))
-
-        detail = {'username': username}
+        # ---------- 4) 执行签到 ----------
+        r = requests.post(f'{SMAI_API}/api/user/checkin',
+                          cookies={'session': session},
+                          headers={**auth_headers, 'Smai-Api-User': uid},
+                          json={}, timeout=15)
+        try:
+            result = r.json()
+        except Exception:
+            result = {}
 
         if result.get('success'):
             # 提取签到详情
@@ -410,15 +483,13 @@ def smai_one(session, uid_hint=''):
             earned_kb = data.get('quota_awarded', 0)  # 本次获得的点数
 
             # 查询最新统计
-            r2 = subprocess.run([
-                'curl', '-s', '--max-time', '15',
-                f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
-                '-H', 'Accept: application/json',
-                '-H', f'Smai-Api-User: {uid}',
-                '-H', f'Cookie: session={session}',
-                '-H', 'User-Agent: Mozilla/5.0'
-            ], capture_output=True, timeout=20)
-            stats2 = json.loads(r2.stdout.decode('utf-8', errors='replace'))
+            try:
+                r2 = requests.get(f'{SMAI_API}/api/user/checkin?year={get_beijing_time().year}',
+                                  cookies={'session': session},
+                                  headers={**auth_headers, 'Smai-Api-User': uid}, timeout=15)
+                stats2 = r2.json()
+            except Exception:
+                stats2 = {}
             st = stats2.get('data', {}).get('stats', {})
             total_days = st.get('total_checkins', '?')
             total_quota_kb = st.get('total_quota', 0)
@@ -432,7 +503,7 @@ def smai_one(session, uid_hint=''):
                     val = val * 0.000002
                     if val == 0: return '$0'
                     return f"${val:.6f}".rstrip('0').rstrip('.')
-                except:
+                except Exception:
                     return str(val)
 
             earned_str = fmt_quota(earned_kb)
@@ -446,7 +517,7 @@ def smai_one(session, uid_hint=''):
         msg = result.get('message', '签到失败')
         return msg, "已签到" in msg, detail
     except Exception as e:
-        return str(e), False, {}
+        return str(e), False, detail
 
 
 # ================= 42w.shop (New API) =================
@@ -629,18 +700,24 @@ def main():
     # ========== SMAI ==========
     results.append("\n### ✅ SMAI.AI 签到结果")
     smai_user_ids = get_smai_user_ids()
+    smai_refreshes = get_smai_refresh()
     s_success = 0; s_total = len(smai_sessions)
+    new_refresh_list = [smai_refreshes[i] if i < len(smai_refreshes) else '' for i in range(len(smai_sessions))]
     if smai_sessions:
         for i, sess in enumerate(smai_sessions):
             key = sess[:20] + "..."
             uid = smai_user_ids[i] if i < len(smai_user_ids) else ''
+            refresh = smai_refreshes[i] if i < len(smai_refreshes) else ''
             if is_skipped(state, 'smai', key, is_morning):
                 results.append(f"• {uid or '账号'+str(i+1)}: 上午已签，跳过")
                 s_success += 1
             else:
                 log(f"  SMAI 签到... ({key})")
-                msg, ok, detail = smai_one(sess, uid)
+                msg, ok, detail = smai_one(sess, uid, refresh)
                 uname = detail.get('username', uid or f'账号{i+1}')
+                nr = detail.get('new_refresh')
+                if nr and nr != refresh:
+                    new_refresh_list[i] = nr
                 if ok:
                     record_success(state, 'smai', key)
                     s_success += 1
@@ -650,6 +727,9 @@ def main():
                     results.append(f"• {uname}: {msg}")
                 else:
                     results.append(f"• {uname}: {msg}")
+        # 若 refresh token 发生轮换，持久化新值（避免下次 AUTH_SESSION_REVOKED）
+        if any(new_refresh_list[i] != (smai_refreshes[i] if i < len(smai_refreshes) else '') for i in range(len(new_refresh_list))):
+            persist_smai_refresh(new_refresh_list)
     else:
         results.append("• 未配置，跳过")
 

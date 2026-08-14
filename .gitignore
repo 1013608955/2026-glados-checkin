@@ -31,3 +31,11 @@ check_42w_pages*.py
 auto_login_42w.py
 smart_42w_login.py
 test_voapi.py
+
+# SMAI 本地抓取产物（含敏感 cookie/token，禁止提交）
+smai_session.txt
+smai_refresh.txt
+smai_refresh_latest.txt
+cookie_live.txt
+chrome_cookies_live.db
+chrome_cookies_shadow.db
