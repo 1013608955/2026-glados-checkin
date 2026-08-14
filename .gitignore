@@ -1,5 +1,6 @@
 # ===== 敏感 / 登录态（切勿提交） =====
 cookie_live.txt
+W42_SECRETS.txt
 cookie.txt
 cookie2.txt
 chrome_cookies_live.db
