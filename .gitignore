@@ -1,0 +1,27 @@
+# ===== 敏感 / 登录态（切勿提交） =====
+cookie_live.txt
+cookie.txt
+cookie2.txt
+chrome_cookies_live.db
+chrome_cookies_shadow.db
+*.db
+
+# ===== 本地缓存 / 记忆 / 运行态 =====
+.workbuddy/
+__pycache__/
+.checkin_state.json
+
+# ===== 调试 / 临时脚本（非功能文件） =====
+index.js
+page__*.html
+抓包.txt
+test_*.py
+diag_cookies.py
+test_ws_origin.py
+find_*.py
+get_uid.py
+check_expiry.py
+check_42w_pages*.py
+auto_login_42w.py
+smart_42w_login.py
+test_voapi.py

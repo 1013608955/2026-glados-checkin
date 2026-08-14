@@ -1,4 +1,4 @@
-name: Multi-Platform Checkin (GLaDOS + ikuuu + SMAI)
+name: Multi-Platform Checkin (GLaDOS + ikuuu + SMAI + 42w)
 
 on:
   schedule:
@@ -47,6 +47,9 @@ jobs:
           SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
           SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
           VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}
+          W42_COOKIE: ${{ secrets.W42_COOKIE }}
+          W42_UID: ${{ secrets.W42_UID }}
+          W42_PROXY: ${{ secrets.W42_PROXY }}
 
       - name: Check Skip Afternoon
         id: skip_check
@@ -72,3 +75,6 @@ jobs:
           SMAI_SESSION: ${{ secrets.SMAI_SESSION }}
           SMAI_USER_ID: ${{ secrets.SMAI_USER_ID }}
           VOAPI_TOKEN: ${{ secrets.VOAPI_TOKEN }}
+          W42_COOKIE: ${{ secrets.W42_COOKIE }}
+          W42_UID: ${{ secrets.W42_UID }}
+          W42_PROXY: ${{ secrets.W42_PROXY }}

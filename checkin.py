@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)
+2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + 42w.shop)
 功能：
-- GLaDOS / ikuuu / SMAI.AI 全自动签到
+- GLaDOS / ikuuu / SMAI.AI / 42w.shop 全自动签到
 - 多账号支持（& 分隔）
 - 按账号级别：上午成功 → 下午跳过该账号
 - Token 过期自动检测 + 警告推送
@@ -27,6 +27,7 @@ COMMON_HEADERS = {
     'Accept': 'application/json, text/plain, */*',
 }
 SMAI_API = "https://api.smai.ai"
+W42_API = "https://api.42w.shop"
 STATE_FILE = os.environ.get("CHECKIN_STATE_FILE", ".checkin_state.json")
 
 # ================= 工具函数 =================
@@ -94,6 +95,16 @@ def get_smai_user_ids():
     if not raw: return []
     return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
 
+def get_w42_cookies():
+    raw = os.environ.get('W42_COOKIE', '')
+    if not raw: return []
+    return [c.strip() for c in (raw.split('\n') if '\n' in raw else raw.split('&')) if c.strip()]
+
+def get_w42_uids():
+    raw = os.environ.get('W42_UID', '')
+    if not raw: return []
+    return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
+
 # ================= 状态管理 =================
 def load_state():
     try:
@@ -146,6 +157,7 @@ EXPIRED_KEYWORDS = {
     'glados': ['unauthorized', 'login', '请重新登录', 'invalid token', '401'],
     'ikuuu': ['密码错误', '用户不存在', '登录失败', 'unauthorized', '401', '403', '405'],
     'smai': ['未登录', '无权', 'unauthorized', '401', 'expired', '过期', '未提供'],
+    'w42': ['未授权', 'unauthorized', '401', '登录失效', 'expired', '过期', '无效'],
 }
 
 def is_expired(platform, msg):
@@ -437,13 +449,69 @@ def smai_one(session, uid_hint=''):
         return str(e), False, {}
 
 
+# ================= 42w.shop (New API) =================
+def w42_one(cookie, uid_hint=''):
+    """单个 42w.shop 账号签到 - 返回 (msg, ok, detail)
+
+    鉴权：session Cookie + New-Api-User(数字 uid) 请求头。
+    代理：读取 W42_PROXY 环境变量（仅本平台使用，避免影响其它平台）；
+          未设置时回退到系统 HTTPS_PROXY/HTTP_PROXY，仍不可用则直连。
+    """
+    try:
+        from datetime import datetime as _dt
+        proxy = os.environ.get('W42_PROXY', '').strip()
+        proxies = {'http': proxy, 'https': proxy} if proxy else None
+        h = {
+            'User-Agent': COMMON_HEADERS['User-Agent'],
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Cookie': cookie,
+        }
+        if uid_hint:
+            h['New-Api-User'] = uid_hint
+
+        # 1) 校验登录态并解析 uid / 用户名
+        r = requests.get(f'{W42_API}/api/user/self', headers=h, proxies=proxies, timeout=15)
+        info = r.json()
+        if not info.get('success'):
+            return info.get('message', '未授权/登录失效'), False, {}
+        d = info.get('data', {})
+        uid = uid_hint or str(d.get('id', ''))
+        username = d.get('display_name') or d.get('username') or uid
+        if not uid_hint:
+            h['New-Api-User'] = uid
+
+        # 2) 执行签到
+        r2 = requests.post(f'{W42_API}/api/user/checkin', headers=h, proxies=proxies, timeout=15, data='{}')
+        res = r2.json()
+
+        # 3) 拉取统计用于汇总
+        r3 = requests.get(f'{W42_API}/api/user/checkin', headers=h, proxies=proxies, timeout=15)
+        st = r3.json().get('data', {}).get('stats', {})
+        today_q = (st.get('records') or [{}])[0].get('quota_awarded')
+        total_days = st.get('total_checkins')
+        total_q = st.get('total_quota')
+        detail = {'username': username, 'uid': uid,
+                  'total_days': total_days, 'total_quota': total_q, 'today_quota': today_q}
+
+        if res.get('success'):
+            earned = res.get('data', {}).get('quota_awarded', today_q)
+            return f"签到成功 +{earned}，累计 {total_q}，共 {total_days} 天", True, detail
+        msg = res.get('message', '签到失败')
+        if '已签到' in msg:
+            return f"今日已签到 (今日 +{today_q}，累计 {total_q}，共 {total_days} 天)", True, detail
+        return msg, False, detail
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)[:60]}", False, {}
+
+
 def main():
     # 获取北京时间
     beijing_time = get_beijing_time()
     is_morning = beijing_time.hour < 15  # 北京时间 0-15 点为上午，15-24 点为下午
 
     log("=" * 50)
-    log(f"🚀 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)")
+    log(f"🚀 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + 42w.shop)")
     log(f"⏰ {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} {'(上午)' if is_morning else '(下午)'}")
     log("=" * 50)
 
@@ -456,12 +524,15 @@ def main():
     ikuuu_accounts = get_ikuuu_accounts()
     smai_sessions = get_smai_sessions()
     smai_user_ids = get_smai_user_ids()
+    w42_cookies = get_w42_cookies()
+    w42_uids = get_w42_uids()
     voapi_tokens = []  # VOAPI 已移除
     config = {
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
         # ikuuu: cookie 用 "cookie_N" 做 key，密码用 email 做 key
         'ikuuu': [f"cookie_{i+1}" if mode == 'cookie' else email for i, (mode, val) in enumerate(ikuuu_accounts) for email in [val[0] if isinstance(val, tuple) else val]],
         'smai': [s[:20]+"..." for s in smai_sessions],
+        'w42': [c[:20]+"..." for c in w42_cookies],
     }
 
     # 下午：全部成功则跳过
@@ -559,16 +630,44 @@ def main():
     else:
         results.append("• 未配置，跳过")
 
+    # ========== 42w.shop ==========
+    results.append("\n### 🔷 42w.shop 签到结果")
+    w42_uids = get_w42_uids()
+    w_success = 0; w_total = len(w42_cookies)
+    if w42_cookies:
+        for i, ck in enumerate(w42_cookies):
+            key = ck[:20] + "..."
+            uid = w42_uids[i] if i < len(w42_uids) else ''
+            if is_skipped(state, 'w42', key, is_morning):
+                results.append(f"• {uid or '账号'+str(i+1)}: 上午已签，跳过")
+                w_success += 1
+            else:
+                log(f"  42w 签到... ({key})")
+                msg, ok, detail = w42_one(ck, uid)
+                uname = detail.get('username', uid or f'账号{i+1}')
+                if ok:
+                    record_success(state, 'w42', key)
+                    w_success += 1
+                    results.append(f"• {uname}: {msg}")
+                elif is_expired('w42', msg):
+                    expired.append(f"🔷 42w [{key}] Cookie 可能过期")
+                    results.append(f"• {uname}: {msg}")
+                else:
+                    results.append(f"• {uname}: {msg}")
+    else:
+        results.append("• 未配置，跳过")
+
     save_state(state)
 
     # ========== 推送 ==========
     # 汇总统计
-    total_done = g_success + i_success + s_success
-    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0)
+    total_done = g_success + i_success + s_success + w_success
+    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0) + (w_total if w_total else 0)
     summary = f"📊 汇总：{total_done}/{total_all} 成功"
     if g_total: summary += f" | GLaDOS {g_success}/{g_total}"
     if i_total: summary += f" | ikuuu {i_success}/{i_total}"
     if s_total: summary += f" | SMAI {s_success}/{s_total}"
+    if w_total: summary += f" | 42w {w_success}/{w_total}"
 
     body = ""
     if expired:
