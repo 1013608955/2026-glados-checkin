@@ -455,12 +455,16 @@ def w42_one(cookie, uid_hint=''):
 
     鉴权：session Cookie + New-Api-User(数字 uid) 请求头。
     代理：读取 W42_PROXY 环境变量（仅本平台使用，避免影响其它平台）；
-          未设置时回退到系统 HTTPS_PROXY/HTTP_PROXY，仍不可用则直连。
+          未设置时强制直连（trust_env=False，不读 runner 自带的环境代理）。
     """
     try:
         from datetime import datetime as _dt
         proxy = os.environ.get('W42_PROXY', '').strip()
         proxies = {'http': proxy, 'https': proxy} if proxy else None
+        # 强制直连，忽略 runner 可能自带的环境代理（HTTP_PROXY/HTTPS_PROXY），
+        # 只认可选的 W42_PROXY，避免被未知代理劫持导致空响应。
+        s = requests.Session()
+        s.trust_env = False
         h = {
             'User-Agent': COMMON_HEADERS['User-Agent'],
             'Accept': 'application/json',
@@ -470,9 +474,23 @@ def w42_one(cookie, uid_hint=''):
         if uid_hint:
             h['New-Api-User'] = uid_hint
 
+        def _get_json(url, method='GET', data=None):
+            r = s.request(method, url, headers=h, proxies=proxies, timeout=15, data=data)
+            body = r.text or ''
+            ctype = r.headers.get('Content-Type', '')
+            if not body.strip():
+                # 空响应：通常是被网络层/代理拦掉，或 Cloudflare 重置
+                raise ValueError(f"HTTP {r.status_code} 空响应 server={r.headers.get('server','?')}"
+                                 f" cf-ray={r.headers.get('cf-ray','?')}")
+            if 'application/json' not in ctype.lower():
+                # 非 JSON：极可能是 Cloudflare 挑战页 / 拦截页
+                snippet = ' '.join(body[:160].split())
+                raise ValueError(f"HTTP {r.status_code} 非JSON(ct={ctype}) "
+                                 f"cf-ray={r.headers.get('cf-ray','?')} :: {snippet}")
+            return r.json()
+
         # 1) 校验登录态并解析 uid / 用户名
-        r = requests.get(f'{W42_API}/api/user/self', headers=h, proxies=proxies, timeout=15)
-        info = r.json()
+        info = _get_json(f'{W42_API}/api/user/self')
         if not info.get('success'):
             return info.get('message', '未授权/登录失效'), False, {}
         d = info.get('data', {})
@@ -482,12 +500,10 @@ def w42_one(cookie, uid_hint=''):
             h['New-Api-User'] = uid
 
         # 2) 执行签到
-        r2 = requests.post(f'{W42_API}/api/user/checkin', headers=h, proxies=proxies, timeout=15, data='{}')
-        res = r2.json()
+        res = _get_json(f'{W42_API}/api/user/checkin', method='POST', data='{}')
 
         # 3) 拉取统计用于汇总
-        r3 = requests.get(f'{W42_API}/api/user/checkin', headers=h, proxies=proxies, timeout=15)
-        st = r3.json().get('data', {}).get('stats', {})
+        st = _get_json(f'{W42_API}/api/user/checkin').get('data', {}).get('stats', {})
         today_q = (st.get('records') or [{}])[0].get('quota_awarded')
         total_days = st.get('total_checkins')
         total_q = st.get('total_quota')
