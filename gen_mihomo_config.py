@@ -1,50 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-根据订阅链接 W42_SUB 生成 mihomo (Clash Meta) 配置。
+根据订阅链接 W42_SUB 生成 mihomo (Clash Meta) 配置——只抽取【单个节点】。
 
-关键点：多数订阅（如 ziyoufly）返回的是“完整配置”（含 mixed-port/dns/
-rules/proxy-groups 等），而 mihomo 的 proxy-provider 只需要 proxies 列表。
-若直接把完整配置当 provider，mihomo 会因顶层出现 mixed-port 等字段而解析失败。
-因此这里先把订阅下载下来，抽取出 proxies: 段写成 sub_cache.yaml（file 类型），
-再用 w42 选择组引用它，全流量经选中节点出口。仅用标准库。
+为什么是单节点：42w 的 cf_clearance 与抓 Cookie 时的出口 IP 绑定。该订阅里每个
+节点的 servername/Host 不同 → 出口 IP 完全不同。只有当初抓 Cookie 用的那个节点
+（默认“新加坡高速 05| CTCM”，可用 W42_SUB_NODE 覆盖）出口 IP 才对得上，换了节点
+CF 直接重挑战 403。因此不探测、不列节点，直接把那一个节点写死成单节点隧道即可。
+
+实现：下载订阅 → 按节点名抽取其完整定义（含它自己的 servername/uuid 等）→
+写成 mihomo_config.yaml（proxies 仅此一个 + w42 选择组 + MATCH 全走 w42）。
+仅用标准库。
 """
 import os
+import re
 import urllib.request
 
-SUB_CACHE = "sub_cache.yaml"
+# 当初抓 Cookie 用的节点（出口 IP 与 cf_clearance 对齐）；可用 W42_SUB_NODE 覆盖
+DEFAULT_NODE = "新加坡高速 05| CTCM"
 
 
 def fetch_subscription(sub):
     req = urllib.request.Request(
         sub,
-        headers={
-            "User-Agent": "clash-verge/1.10.0",
-            "Accept": "*/*",
-        },
+        headers={"User-Agent": "clash-verge/1.10.0", "Accept": "*/*"},
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8", errors="replace")
 
 
-def extract_proxies(raw):
-    """从完整配置中抽取 proxies: 段（含其缩进子项），直到下一个顶层键为止。"""
-    lines = raw.splitlines()
-    out = []
-    capturing = False
-    for ln in lines:
-        if ln.startswith("proxies:"):
-            capturing = True
-            out.append(ln)
+def extract_node(raw, node_name):
+    """从订阅里抽取指定节点名的【代理定义】整行（不是 group 引用）。"""
+    pat = re.compile(r"name:\s*['\"]?" + re.escape(node_name) + r"['\"]?")
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s.startswith("-"):
             continue
-        if capturing:
-            stripped = ln.strip()
-            # 顶层键（列 0 起、以冒号结尾）且不是 proxies: 本身 → 段结束
-            if ln and not ln[0].isspace() and stripped.endswith(":") \
-                    and not stripped.startswith("proxies:"):
-                break
-            out.append(ln)
-    return "\n".join(out).strip() + "\n"
+        # 代理定义行含 server:；proxy-group 行（select/url-test）不含，据此区分
+        if "server:" not in s:
+            continue
+        if pat.search(s):
+            return s
+    return None
 
 
 def main():
@@ -52,45 +49,39 @@ def main():
     if not sub:
         raise SystemExit("W42_SUB 未设置，无法生成 mihomo 配置")
 
+    node = (os.environ.get("W42_SUB_NODE") or "").strip() or DEFAULT_NODE
     print(f"[gen] 下载订阅: {sub[:64]}...")
     raw = fetch_subscription(sub)
     print(f"[gen] 订阅大小: {len(raw)} 字符")
 
-    prox = extract_proxies(raw)
-    if "proxies:" not in prox or len(prox) < 20:
-        print("[gen] 未找到标准 proxies: 段，整份当作 provider 文件写入")
-        prox = raw
-    with open(SUB_CACHE, "w", encoding="utf-8") as f:
-        f.write(prox)
-    n = prox.count("name:")  # 粗略计数（含组名等，仅供日志）
-    print(f"[gen] 已写出 {SUB_CACHE}（约 {n} 处 name）")
+    entry = extract_node(raw, node)
+    if not entry:
+        raise SystemExit(
+            f"[gen] 在订阅中找不到节点 '{node}'。\n"
+            f"      请确认 W42_SUB_NODE 与订阅里的节点名完全一致"
+            f"（区分空格/竖线/大小写），或更新 W42_SUB 链接。"
+        )
+    print(f"[gen] 已抽取单节点: {node}")
 
-    cfg = f"""# 由 gen_mihomo_config.py 自动生成
+    cfg = f"""# 由 gen_mihomo_config.py 自动生成（单节点：{node}）
 mixed-port: 7890
 mode: rule
 allow-lan: false
 log-level: info
 external-controller: 127.0.0.1:9090
-proxy-providers:
-  sub:
-    type: file
-    path: ./{SUB_CACHE}
-    health-check:
-      enable: true
-      url: https://api.42w.shop
-      interval: 600
-proxies: []
+proxies:
+  {entry}
 proxy-groups:
   - name: w42
     type: select
     proxies:
-      - sub
+      - {node}
 rules:
   - MATCH,w42
 """
     with open("mihomo_config.yaml", "w", encoding="utf-8") as f:
         f.write(cfg)
-    print("[gen] 已生成 mihomo_config.yaml")
+    print("[gen] 已生成 mihomo_config.yaml（单节点隧道，无需探测）")
 
 
 if __name__ == "__main__":

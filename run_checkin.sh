@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 若设了 W42_SUB：启动 mihomo（后台），等端口就绪，钉选节点，
-# 导出 W42_PROXY=http://127.0.0.1:7890，再跑 checkin.py；脚本结束杀掉 mihomo。
-# 若未设 W42_SUB：直接跑 checkin.py（沿用既有 W42_PROXY 或直连）。
+# 若设了 W42_SUB：gen_mihomo_config.py 抽取单节点 → 启动 mihomo（后台）→
+# 等端口 7890 就绪 → 导出 W42_PROXY=http://127.0.0.1:7890 → 跑 checkin.py；
+# 脚本结束杀掉 mihomo。若未设 W42_SUB：直接跑 checkin.py（沿用既有 W42_PROXY 或直连）。
 set +e
 
 MH_PID=""
@@ -23,9 +23,6 @@ if [ -n "$W42_SUB" ]; then
     echo "⚠️ mihomo 端口未就绪，查看 mihomo.log："
     tail -20 mihomo.log 2>/dev/null || true
   fi
-  python list_and_pin.py || true
-  # 自动探测：逐个节点试到能过 Cloudflare 的那个并钉住
-  python probe_and_pin.py || true
   export W42_PROXY=http://127.0.0.1:7890
 fi
 
