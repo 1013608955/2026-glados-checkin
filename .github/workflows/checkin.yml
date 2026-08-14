@@ -66,26 +66,10 @@ jobs:
           else
             VER=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep -oP '"tag_name": "\K[^"]+')
             echo "mihomo 版本: $VER"
-            curl -sL "https://github.com/MetaCubeX/mihomo/releases/download/$VER/mihomo-linux-amd64-$VER.gz" -o mihomo.gz
-            # 校验官方 SHA256，防供应链投毒 / 传输损坏
-            curl -sL "https://github.com/MetaCubeX/mihomo/releases/download/$VER/checksums.txt" -o checksums.txt
-            if [ -s checksums.txt ]; then
-              EXPECT=$(grep -m1 -F "mihomo-linux-amd64-$VER.gz" checksums.txt | awk '{print $1}')
-              ACTUAL=$(sha256sum mihomo.gz | awk '{print $1}')
-              if [ -n "$EXPECT" ]; then
-                echo "期望 SHA256: $EXPECT"
-                echo "实际 SHA256: $ACTUAL"
-                if [ "$EXPECT" != "$ACTUAL" ]; then
-                  echo "❌ mihomo 校验和不匹配，疑似下载被篡改，终止！"
-                  exit 1
-                fi
-                echo "✅ mihomo SHA256 校验通过"
-              else
-                echo "⚠️ checksums.txt 中未找到对应条目，跳过校验（不阻断）"
-              fi
-            else
-              echo "⚠️ 未取到 checksums.txt，跳过校验（不阻断）"
-            fi
+            curl -fsSL "https://github.com/MetaCubeX/mihomo/releases/download/$VER/mihomo-linux-amd64-$VER.gz" -o mihomo.gz
+            # 从 GitHub Releases 经 HTTPS 下载。注意：mihomo 官方 release 不发布
+            # 独立校验和文件，完整性依赖 GitHub 分发链路（TLS）；如需更强校验可改为
+            # 自托管二进制，或钉选固定版本并手算 SHA256 后在此显式比对。
             gunzip -f mihomo.gz && chmod +x mihomo
           fi
           ./mihomo -v || true
