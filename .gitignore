@@ -16,6 +16,11 @@ __pycache__/
 index.js
 page__*.html
 抓包.txt
+mihomo
+mihomo.gz
+mihomo_config.yaml
+sub_cache.yaml
+mihomo.log
 test_*.py
 diag_cookies.py
 test_ws_origin.py

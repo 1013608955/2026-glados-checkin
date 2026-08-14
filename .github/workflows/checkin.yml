@@ -36,9 +36,21 @@ jobs:
           restore-keys: |
             checkin-state-
 
+      - name: Install mihomo (Clash Meta, 供 W42_SUB 订阅代理)
+        run: |
+          if [ -x ./mihomo ]; then
+            echo "mihomo 已存在，跳过下载"
+          else
+            VER=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep -oP '"tag_name": "\K[^"]+')
+            echo "mihomo 版本: $VER"
+            curl -sL "https://github.com/MetaCubeX/mihomo/releases/download/$VER/mihomo-linux-amd64-$VER.gz" -o mihomo.gz
+            gunzip -f mihomo.gz && chmod +x mihomo
+          fi
+          ./mihomo -v || true
+
       - name: Run All Platforms Checkin
         id: checkin
-        run: python checkin.py 2>&1 | tee checkin_output.txt
+        run: bash run_checkin.sh
         timeout-minutes: 8
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
@@ -50,6 +62,8 @@ jobs:
           W42_COOKIE: ${{ secrets.W42_COOKIE }}
           W42_UID: ${{ secrets.W42_UID }}
           W42_PROXY: ${{ secrets.W42_PROXY }}
+          W42_SUB: ${{ secrets.W42_SUB }}
+          W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
 
       - name: Check Skip Afternoon
         id: skip_check
@@ -66,7 +80,7 @@ jobs:
         run: |
           echo "首次失败，60秒后重试..."
           sleep 60
-          python checkin.py
+          bash run_checkin.sh
         timeout-minutes: 5
         env:
           GLADOS_COOKIE: ${{ secrets.GLADOS_COOKIE }}
@@ -78,3 +92,5 @@ jobs:
           W42_COOKIE: ${{ secrets.W42_COOKIE }}
           W42_UID: ${{ secrets.W42_UID }}
           W42_PROXY: ${{ secrets.W42_PROXY }}
+          W42_SUB: ${{ secrets.W42_SUB }}
+          W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
