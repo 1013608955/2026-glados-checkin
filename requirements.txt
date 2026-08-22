@@ -1,2 +1,2 @@
 requests>=2.28.0
-PySocks>=1.7.1
+# 如需 W42_PROXY 使用 socks5:// 代理，再手动追加 PySocks（当前全链路只用 http 代理，无需此依赖）

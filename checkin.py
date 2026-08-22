@@ -15,7 +15,7 @@ import os
 import sys
 import re
 import traceback
-from datetime import datetime, date, timedelta  # 新增：导入 timedelta
+from datetime import date  # 仅顶层需要 date（W42 Cookie 龄期）；datetime/timedelta 在各函数内局部导入
 
 if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -113,13 +113,16 @@ def persist_smai_refresh(new_list):
     """把轮换后的 new_api_refresh 写回文件，若配置了 PAT 则直接更新 GitHub Secret。
     注意：SMAI 的 refresh 会【轮换】令牌（旧 token 失效），故必须把新 token 持久化，
     否则下次运行会因 AUTH_SESSION_REVOKED 而失败。"""
-    try:
-        with open('smai_refresh_latest.txt', 'w', encoding='utf-8') as f:
-            f.write('\n'.join(new_list))
-        log("  SMAI 新 refresh token 已写入 smai_refresh_latest.txt")
-    except Exception as e:
-        log(f"  ⚠️ 写入 smai_refresh_latest.txt 失败: {e}")
-        log_traceback('persist_smai_refresh(写文件)')
+    # 明文落盘默认开启（无 PAT 时便于手动恢复 Secret）；设 SMAI_PERSIST_FILE=0 可关闭。
+    # 该文件已在 .gitignore 中，但仍是明文敏感文件——恢复完成后建议手动删除。
+    if os.environ.get('SMAI_PERSIST_FILE', '1') != '0':
+        try:
+            with open('smai_refresh_latest.txt', 'w', encoding='utf-8') as f:
+                f.write('\n'.join(new_list))
+            log("  SMAI 新 refresh token 已写入 smai_refresh_latest.txt（⚠️ 明文敏感文件，恢复后建议删除）")
+        except Exception as e:
+            log(f"  ⚠️ 写入 smai_refresh_latest.txt 失败: {e}")
+            log_traceback('persist_smai_refresh(写文件)')
     pat = os.environ.get('SMAI_PERSIST_PAT') or os.environ.get('REPO_PAT')
     if pat:
         try:
@@ -149,10 +152,15 @@ def get_w42_uids():
 
 # ================= 状态管理 =================
 def load_state():
+    legacy_watch = {}
     try:
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
+                # 跨天数据：W42 Cookie 龄期监控需跨天保留；每日签到记录按天重置
+                w = state.get('w42_cookie_watch')
+                if isinstance(w, dict):
+                    legacy_watch = {'w42_cookie_watch': w}
                 # 用北京时间判断日期
                 beijing_date = get_beijing_time().date()
                 if state.get('date') == str(beijing_date):
@@ -163,9 +171,11 @@ def load_state():
                     return state
     except Exception:
         log_traceback('load_state(读旧状态失败，改用全新状态)')
-    # 用北京时间初始化日期
+    # 用北京时间初始化日期（跨天时仅回填跨天的 w42_cookie_watch）
     beijing_date = get_beijing_time().date()
-    return {'date': str(beijing_date), 'morning': {}}
+    fresh = {'date': str(beijing_date), 'morning': {}}
+    fresh.update(legacy_watch)
+    return fresh
 
 def save_state(state):
     try:
@@ -709,7 +719,6 @@ def main():
     smai_user_ids = get_smai_user_ids()
     w42_cookies = get_w42_cookies()
     w42_uids = get_w42_uids()
-    voapi_tokens = []  # VOAPI 已移除
     config = {
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
         # ikuuu: cookie 用 "cookie_N" 做 key，密码用 email 做 key
@@ -723,6 +732,28 @@ def main():
         log("🎉 上午全部成功，下午跳过！")
         log("SKIP_AFTERNOON=true")
         return
+
+    # ========== W42 Cookie 龄期预警（实测 session 有效期约 26 天）==========
+    # 原理：对 W42_COOKIE 内容取指纹存入跨天持久的 state；同值连续使用 ≥18 天
+    # 就在推送里预警，避免「26 天后静默失效才发现」。换新 Cookie 自动重置计时。
+    if w42_cookies:
+        import hashlib
+        fp = hashlib.sha256('|'.join(w42_cookies).encode('utf-8')).hexdigest()[:16]
+        today = get_beijing_time().date()
+        watch = state.setdefault('w42_cookie_watch', {})
+        if watch.get('hash') != fp:
+            watch['hash'] = fp
+            watch['first_seen'] = str(today)
+        else:
+            try:
+                age = (today - date.fromisoformat(watch.get('first_seen', str(today)))).days
+            except Exception:
+                age = 0
+                watch['first_seen'] = str(today)
+            if age >= 18:
+                warn = f"🔷 42w Cookie 已连续使用 {age} 天（实测有效期约 26 天），请尽快刷新 W42_COOKIE"
+                expired.append(warn)
+                log(f"⚠️ {warn}")
 
     # ========== GLaDOS ==========
     if glados_cookies:
