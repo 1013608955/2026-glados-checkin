@@ -44,6 +44,30 @@ def extract_node(raw, node_name):
     return None
 
 
+def extract_node_block(raw, node_name):
+    """块级兜底：多行 YAML 写法（name 独占一行、server 等在后续缩进行）时，
+    抓取该节点从 '- name:' 起的整个定义块。返回行列表；找不到返回 None。"""
+    pat = re.compile(r"name:\s*['\"]?" + re.escape(node_name) + r"['\"]?\s*(#.*)?$")
+    lines = raw.splitlines()
+    for i, s in enumerate(lines):
+        t = s.strip()
+        if not (t.startswith("-") and pat.search(t)):
+            continue
+        indent = len(s) - len(s.lstrip())
+        block = [s]
+        for j in range(i + 1, len(lines)):
+            nxt = lines[j]
+            if not nxt.strip():
+                break
+            if len(nxt) - len(nxt.lstrip()) <= indent:
+                break
+            block.append(nxt)
+        # 必须含 server: 才是代理定义（排除同名的 group 或引用行）
+        if any("server:" in b for b in block):
+            return block
+    return None
+
+
 def main():
     sub = (os.environ.get("W42_SUB") or "").strip()
     if not sub:
@@ -60,13 +84,22 @@ def main():
     print(f"[gen] 订阅大小: {len(raw)} 字符")
 
     entry = extract_node(raw, node)
-    if not entry:
+    block = None
+    if entry:
+        print(f"[gen] 已抽取单节点(单行写法): {node}")
+    else:
+        block = extract_node_block(raw, node)
+        if block:
+            print(f"[gen] 已抽取单节点(多行写法, {len(block)} 行定义): {node}")
+    if not entry and not block:
         raise SystemExit(
             f"[gen] 在订阅中找不到节点 '{node}'。\n"
             f"      请确认 W42_SUB_NODE 与订阅里的节点名完全一致"
             f"（区分空格/竖线/大小写），或更新 W42_SUB 链接。"
         )
-    print(f"[gen] 已抽取单节点: {node}")
+    proxies_section = f"  {entry}" if entry else "\n".join(block)
+    if "server:" not in proxies_section:
+        raise SystemExit("[gen] 抽取结果缺少 server: 字段，生成的配置无效，终止")
 
     cfg = f"""# 由 gen_mihomo_config.py 自动生成（单节点：{node}）
 mixed-port: 7890
@@ -75,7 +108,7 @@ allow-lan: false
 log-level: info
 external-controller: 127.0.0.1:9090
 proxies:
-  {entry}
+{proxies_section}
 proxy-groups:
   - name: w42
     type: select
