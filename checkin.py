@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import re
+import traceback
 from datetime import datetime, date, timedelta  # 新增：导入 timedelta
 
 if sys.platform.startswith('win'):
@@ -45,13 +46,19 @@ def log(msg):
     beijing_time = get_beijing_time()
     print(f"[{beijing_time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
+def log_traceback(context):
+    """把当前正在处理的异常完整堆栈逐行写入日志（CI 排障用），
+    不改变调用方「优雅降级」的控制流——只是不再静默吞掉根因。"""
+    for ln in traceback.format_exc(limit=8).rstrip().splitlines():
+        log(f"  🐞 [{context}] {ln}")
+
 def extract_cookie(raw):
     if not raw: return None
     raw = raw.strip()
     if 'koa:sess=' in raw or 'koa:sess.sig=' in raw: return raw
     if raw.startswith('{'):
         try: return 'koa.sess=' + json.loads(raw).get('token')
-        except: pass
+        except Exception: pass
     if raw.count('.') == 2 and '=' not in raw and len(raw) > 50: return 'koa:sess=' + raw
     return raw
 
@@ -112,6 +119,7 @@ def persist_smai_refresh(new_list):
         log("  SMAI 新 refresh token 已写入 smai_refresh_latest.txt")
     except Exception as e:
         log(f"  ⚠️ 写入 smai_refresh_latest.txt 失败: {e}")
+        log_traceback('persist_smai_refresh(写文件)')
     pat = os.environ.get('SMAI_PERSIST_PAT') or os.environ.get('REPO_PAT')
     if pat:
         try:
@@ -125,6 +133,7 @@ def persist_smai_refresh(new_list):
             log("  ✅ SMAI_REFRESH 已自动持久化到 GitHub Secret（无需手动更新）")
         except Exception as e:
             log(f"  ⚠️ 自动持久化失败（请手动把 smai_refresh_latest.txt 内容更新到 SMAI_REFRESH Secret）：{e}")
+            log_traceback('persist_smai_refresh(gh secret set)')
     else:
         log("  ℹ️ 未配置 PAT（SMAI_PERSIST_PAT/REPO_PAT）：请手动把 smai_refresh_latest.txt 内容更新到 SMAI_REFRESH Secret，或重新抓取 new_api_refresh")
 
@@ -152,7 +161,8 @@ def load_state():
                         if not isinstance(v, dict):
                             state['morning'][k] = {}
                     return state
-    except: pass
+    except Exception:
+        log_traceback('load_state(读旧状态失败，改用全新状态)')
     # 用北京时间初始化日期
     beijing_date = get_beijing_time().date()
     return {'date': str(beijing_date), 'morning': {}}
@@ -164,6 +174,7 @@ def save_state(state):
         log("💾 状态已保存")
     except Exception as e:
         log(f"⚠️ 保存失败: {e}")
+        log_traceback('save_state')
 
 def record_success(state, platform, key):
     morning = state.setdefault('morning', {})
@@ -222,7 +233,8 @@ def wpush(apikey, title, content):
     except requests.exceptions.Timeout:
         log(f"⚠️ 推送超时")
     except Exception as e:
-        log(f"⚠️ 推送异常：{type(e).__name__}")
+        log(f"⚠️ 推送异常：{type(e).__name__}: {str(e)[:80]}")
+        log_traceback('wpush')
 
 # ================= GLaDOS =================
 class GLaDOS:
@@ -239,7 +251,9 @@ class GLaDOS:
                 h.update({'Cookie': self.cookie, 'Origin': d, 'Referer': f'{d}/console/checkin'})
                 r = requests.request(method, f'{d}{path}', headers=h, json=data, timeout=10)
                 if r.status_code == 200: return r.json()
-            except: continue
+            except Exception as e:
+                log(f"  GLaDOS 请求失败 @ {d}: {type(e).__name__}: {str(e)[:80]}")
+                continue
         return None
 
     def checkin(self):
@@ -306,6 +320,7 @@ def ikuuu_pwd_login(email, pwd):
             return msg, ok
         except Exception as e:
             last_error = f"{domain.split('://')[-1]} 异常：{str(e)[:30]}"
+            log(f"  ⚠️ ikuuu 登录异常 @ {domain}: {last_error}")
             continue
     
     return f"所有域名均失败：{last_error}", False
@@ -370,9 +385,10 @@ def ikuuu_checkin_cookie(cookie_str):
             
         except Exception as e:
             if i < len(IKUUU_DOMAINS) - 1:
-                log(f"  ⚠️ {domain} 异常：{type(e).__name__}, 跳过")
+                log(f"  ⚠️ {domain} 异常：{type(e).__name__}: {str(e)[:80]}, 跳过")
                 continue
-            return f"{type(e).__name__}: {str(e)[:50]}", False
+            log_traceback('ikuuu_checkin_cookie')
+            return f"{type(e).__name__}: {str(e)[:80]}", False
     
     return "所有域名均不可用", False
 
@@ -517,7 +533,8 @@ def smai_one(session, uid_hint='', refresh_token=''):
         msg = result.get('message', '签到失败')
         return msg, "已签到" in msg, detail
     except Exception as e:
-        return str(e), False, detail
+        log_traceback('smai_one')
+        return f"{type(e).__name__}: {str(e)[:120]}", False, detail
 
 
 # ================= 42w.shop (New API) =================
@@ -589,6 +606,7 @@ def w42_one(cookie, uid_hint=''):
             return f"今日已签到 (今日 +{today_q}，累计 {total_q}，共 {total_days} 天)", True, detail
         return msg, False, detail
     except Exception as e:
+        log_traceback('w42_one')
         msg = f"{type(e).__name__}: {str(e)[:120]}"
         # Cloudflare 在 GitHub 数据中心 IP 上直接 403 拦截（cf-ray 头可见），
         # Cookie 本身没问题，是出口 IP 被拦。给出可操作的提示而非笼统报错。
@@ -623,7 +641,14 @@ def _drive(platform, units, is_morning, state, expired, results):
             results.extend(sl or [f"• {u['display']}: 上午已签，跳过"])
             success += 1
             continue
-        msg, ok, lines = u['run']()
+        try:
+            msg, ok, lines = u['run']()
+        except Exception as e:
+            # 单账号意外异常不应炸掉整个任务（其它平台还要继续跑、结果还要推送）
+            log_traceback(f"_drive/{platform}")
+            msg = f"{type(e).__name__}: {str(e)[:100]}"
+            ok = False
+            lines = [f"• {u.get('display', '未知')}: {msg}"]
         if ok:
             record_success(state, platform, u['key'])
             success += 1
