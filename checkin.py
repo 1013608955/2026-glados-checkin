@@ -599,6 +599,70 @@ def w42_one(cookie, uid_hint=''):
         return msg, False, {}
 
 
+def _drive(platform, units, is_morning, state, expired, results):
+    """通用平台驱动：跑完一个平台的所有账号，返回 (success, total)。
+
+    每个 unit 为 dict：
+      - key:        记录/跳过判定用的 key
+      - display:    默认显示名（作用于通用跳过行与默认 warn）
+      - run():      执行单个账号签到，返回 (msg, ok, lines)
+                    lines 为要追加到 results 的结果文本列表
+      - skip_lines: (可选) 可调用，返回跳过时的结果行列表；
+                    缺省用通用 '• {display}: 上午已签，跳过'
+      - warn:       (可选) 过期警告文本；缺省用 '{display} 可能过期'
+    """
+    total = len(units)
+    if not total:
+        return 0, 0
+    success = 0
+    for u in units:
+        if is_skipped(state, platform, u['key'], is_morning):
+            sl = u.get('skip_lines')
+            if callable(sl):
+                sl = sl()
+            results.extend(sl or [f"• {u['display']}: 上午已签，跳过"])
+            success += 1
+            continue
+        msg, ok, lines = u['run']()
+        if ok:
+            record_success(state, platform, u['key'])
+            success += 1
+        elif is_expired(platform, msg):
+            expired.append(u.get('warn') or f"{u['display']} 可能过期")
+        results.extend(lines)
+    return success, total
+
+
+def _glados_run(g):
+    g.checkin()
+    g.load_info()
+    return g.checkin_msg, g.success, [g.text()]
+
+
+def _glados_skip(g):
+    g.checkin_msg = "上午已签，跳过"
+    g.success = True
+    g.load_info()
+    return [g.text()]
+
+
+def _smai_unit(sess, uid, refresh, fallback, i, new_refresh_list, key):
+    log(f"  SMAI 签到... ({key})")
+    msg, ok, detail = smai_one(sess, uid, refresh)
+    uname = detail.get('username', fallback)
+    nr = detail.get('new_refresh')
+    if nr and nr != refresh:
+        new_refresh_list[i] = nr
+    return msg, ok, [f"• {uname}: {msg}"]
+
+
+def _w42_unit(ck, uid, fallback, key):
+    log(f"  42w 签到... ({key})")
+    msg, ok, detail = w42_one(ck, uid)
+    uname = detail.get('username', fallback)
+    return msg, ok, [f"• {uname}: {msg}"]
+
+
 def main():
     # 获取北京时间
     beijing_time = get_beijing_time()
@@ -636,23 +700,21 @@ def main():
         return
 
     # ========== GLaDOS ==========
-    g_success = 0; g_total = len(glados_cookies)
     if glados_cookies:
+        units = []
         for i, ck in enumerate(glados_cookies):
-            key = f"account_{i+1}"
             g = GLaDOS(ck)
-            if is_skipped(state, 'glados', key, is_morning):
-                g.checkin_msg = "上午已签，跳过"; g.success = True
-            else:
-                g.checkin()
-                if g.success: record_success(state, 'glados', key)
-                elif is_expired('glados', g.checkin_msg):
-                    expired.append(f"🖥️ GLaDOS [账号{i+1}] Cookie 可能过期")
-            g.load_info()
-            results.append(g.text())
-            if g.success: g_success += 1
+            units.append({
+                'key': f"account_{i+1}",
+                'display': f"账号{i+1}",
+                'warn': f"🖥️ GLaDOS [账号{i+1}] Cookie 可能过期",
+                'skip_lines': lambda g=g: _glados_skip(g),
+                'run': lambda g=g: _glados_run(g),
+            })
+        g_success, g_total = _drive('glados', units, is_morning, state, expired, results)
     else:
         results.append("### 🖥️ GLaDOS\n未配置，跳过")
+        g_success, g_total = 0, 0
 
     # ========== ikuuu ==========
     results.append("\n### 📶 ikuuu 签到结果")
@@ -701,64 +763,51 @@ def main():
     results.append("\n### ✅ SMAI.AI 签到结果")
     smai_user_ids = get_smai_user_ids()
     smai_refreshes = get_smai_refresh()
-    s_success = 0; s_total = len(smai_sessions)
-    new_refresh_list = [smai_refreshes[i] if i < len(smai_refreshes) else '' for i in range(len(smai_sessions))]
+    s_total = len(smai_sessions)
     if smai_sessions:
+        new_refresh_list = [smai_refreshes[i] if i < len(smai_refreshes) else '' for i in range(s_total)]
+        units = []
         for i, sess in enumerate(smai_sessions):
             key = sess[:20] + "..."
             uid = smai_user_ids[i] if i < len(smai_user_ids) else ''
             refresh = smai_refreshes[i] if i < len(smai_refreshes) else ''
-            if is_skipped(state, 'smai', key, is_morning):
-                results.append(f"• {uid or '账号'+str(i+1)}: 上午已签，跳过")
-                s_success += 1
-            else:
-                log(f"  SMAI 签到... ({key})")
-                msg, ok, detail = smai_one(sess, uid, refresh)
-                uname = detail.get('username', uid or f'账号{i+1}')
-                nr = detail.get('new_refresh')
-                if nr and nr != refresh:
-                    new_refresh_list[i] = nr
-                if ok:
-                    record_success(state, 'smai', key)
-                    s_success += 1
-                    results.append(f"• {uname}: {msg}")
-                elif is_expired('smai', msg):
-                    expired.append(f"✅ SMAI [{key}] Session 可能过期")
-                    results.append(f"• {uname}: {msg}")
-                else:
-                    results.append(f"• {uname}: {msg}")
+            fallback = uid or f"账号{i+1}"
+            units.append({
+                'key': key,
+                'display': fallback,
+                'warn': f"✅ SMAI [{key}] Session 可能过期",
+                'skip_lines': [f"• {fallback}: 上午已签，跳过"],
+                'run': lambda sess=sess, uid=uid, refresh=refresh, fallback=fallback, i=i, nr=new_refresh_list, key=key: _smai_unit(sess, uid, refresh, fallback, i, nr, key),
+            })
+        s_success, _ = _drive('smai', units, is_morning, state, expired, results)
         # 若 refresh token 发生轮换，持久化新值（避免下次 AUTH_SESSION_REVOKED）
         if any(new_refresh_list[i] != (smai_refreshes[i] if i < len(smai_refreshes) else '') for i in range(len(new_refresh_list))):
             persist_smai_refresh(new_refresh_list)
     else:
         results.append("• 未配置，跳过")
+        s_success = 0
 
     # ========== 42w.shop ==========
     results.append("\n### 🔷 42w.shop 签到结果")
     w42_uids = get_w42_uids()
-    w_success = 0; w_total = len(w42_cookies)
+    w_total = len(w42_cookies)
     if w42_cookies:
+        units = []
         for i, ck in enumerate(w42_cookies):
             key = ck[:20] + "..."
             uid = w42_uids[i] if i < len(w42_uids) else ''
-            if is_skipped(state, 'w42', key, is_morning):
-                results.append(f"• {uid or '账号'+str(i+1)}: 上午已签，跳过")
-                w_success += 1
-            else:
-                log(f"  42w 签到... ({key})")
-                msg, ok, detail = w42_one(ck, uid)
-                uname = detail.get('username', uid or f'账号{i+1}')
-                if ok:
-                    record_success(state, 'w42', key)
-                    w_success += 1
-                    results.append(f"• {uname}: {msg}")
-                elif is_expired('w42', msg):
-                    expired.append(f"🔷 42w [{key}] Cookie 可能过期")
-                    results.append(f"• {uname}: {msg}")
-                else:
-                    results.append(f"• {uname}: {msg}")
+            fallback = uid or f"账号{i+1}"
+            units.append({
+                'key': key,
+                'display': fallback,
+                'warn': f"🔷 42w [{key}] Cookie 可能过期",
+                'skip_lines': [f"• {fallback}: 上午已签，跳过"],
+                'run': lambda ck=ck, uid=uid, fallback=fallback, key=key: _w42_unit(ck, uid, fallback, key),
+            })
+        w_success, _ = _drive('w42', units, is_morning, state, expired, results)
     else:
         results.append("• 未配置，跳过")
+        w_success = 0
 
     save_state(state)
 
