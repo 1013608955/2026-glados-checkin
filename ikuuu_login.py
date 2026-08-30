@@ -121,6 +121,14 @@ class Config:
         self.user_agent = env.get("IKUUU_USER_AGENT", DEFAULT_UA).strip() or DEFAULT_UA
         self.remember = _as_bool(env.get("IKUUU_REMEMBER"), default=True)
         self.warn_after_days = int(env.get("IKUUU_WARN_AFTER_DAYS", "25"))
+        # 刷新时机：距过期不足 N 天就刷新（别等彻底失效，否则中间会断档）。
+        # ikuuu 的 Cookie 是固定 7 天、不滑动续期，所以这个阈值很关键。
+        self.refresh_before_days = float(env.get("IKUUU_REFRESH_BEFORE_DAYS", "1.5"))
+        # 登录成功后是否用 gh CLI 把 Cookie 回写到仓库 Secret，
+        # 这样 GitHub Actions 端可以完全无人值守（只做签到，不碰登录）。
+        self.push_secret = _as_bool(env.get("IKUUU_PUSH_SECRET"), default=False)
+        self.secret_name = env.get("IKUUU_SECRET_NAME", "IKUUU_COOKIE").strip() or "IKUUU_COOKIE"
+        self.repo = env.get("IKUUU_REPO", "").strip()
 
     @classmethod
     def load(cls, dotenv_path=".env"):
@@ -200,6 +208,42 @@ def cookie_age_days(store):
     if not ts:
         return None
     return (time.time() - int(ts)) / 86400.0
+
+
+def cookie_remaining_days(store):
+    """距 Cookie 过期还剩多少天；无 expire_in 信息时返回 None。"""
+    ts = (store or {}).get("expire_in_ts")
+    if not ts:
+        return None
+    return (int(ts) - time.time()) / 86400.0
+
+
+def push_secret_to_github(cfg, cookie_str):
+    """用 gh CLI 把 Cookie 回写到仓库 Secret，让 Actions 端无需再登录。
+
+    需要本机已 `gh auth login`。Cookie 只通过 stdin 传入，不会出现在命令行
+    参数（避免被 ps / 日志捕获），也不会打印到日志。
+    """
+    import subprocess
+
+    if not cookie_str:
+        return False, "empty_cookie"
+    cmd = ["gh", "secret", "set", cfg.secret_name, "--body", cookie_str]
+    if cfg.repo:
+        cmd += ["--repo", cfg.repo]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        return False, "gh 未安装（https://cli.github.com/）"
+    except subprocess.TimeoutExpired:
+        return False, "gh secret set 超时"
+    if p.returncode == 0:
+        return True, "ok"
+    err = (p.stderr or p.stdout or "").strip().splitlines()
+    hint = err[-1] if err else f"exit={p.returncode}"
+    if "auth" in hint.lower() or "login" in hint.lower():
+        hint += "（请先执行 gh auth login）"
+    return False, hint[:200]
 
 
 # ============================== 有效性校验 ==============================
@@ -662,6 +706,17 @@ def cmd_login(cfg, as_json=False):
         log(f"❌ 登录拿到了 Cookie 但校验未通过：{reason}")
         return EXIT_NEED_LOGIN
     log(f"✅ 登录并校验成功（{mask_account(cfg.email)}，{len(cookies)} 个 Cookie）")
+
+    if cfg.push_secret:
+        ok2, why = push_secret_to_github(cfg, cookie_str)
+        if ok2:
+            log(f"☁️ 已回写 GitHub Secret `{cfg.secret_name}`"
+                + (f"（{cfg.repo}）" if cfg.repo else ""))
+        else:
+            log(f"⚠️ 回写 Secret 失败：{why}")
+            log("   Actions 端仍会沿用旧 Cookie；可手动执行："
+                f"gh secret set {cfg.secret_name} --body \"<cookie>\"")
+
     if as_json:
         print(json.dumps({k: store[k] for k in
                           ("account", "obtained_at", "source", "validated")},
@@ -670,20 +725,39 @@ def cmd_login(cfg, as_json=False):
 
 
 def cmd_refresh(cfg, as_json=False):
-    """日常入口：Cookie 有效就不登录（省一次验证码），失效才登录。"""
+    """日常入口（给计划任务用）：只有快过期或已失效时才弹浏览器重新登录。
+
+    判定优先级：
+      1) 无 Cookie 文件 → 登录
+      2) 已失效（/user 跳登录页）→ 登录
+      3) 距 expire_in 不足 refresh_before_days 天 → 登录（避免断档）
+      4) 其余 → 什么都不做，直接退出（这样每天跑计划任务也不会骚扰用户）
+    """
     store = load_cookie_store(cfg)
-    if store:
-        ok, reason = validate_cookie(cfg, store.get("cookie", ""))
-        if ok:
-            age = cookie_age_days(store)
-            log(f"✅ 现有 Cookie 仍有效（{reason}），无需重新登录")
-            if age and age >= cfg.warn_after_days:
-                log(f"⚠️ 账龄 {age:.1f} 天 ≥ 阈值 {cfg.warn_after_days} 天，建议尽快刷新")
-            return EXIT_OK
-        log(f"♻️ Cookie 已失效（{reason}），开始重新登录…")
-    else:
+    if not store:
         log("📭 无 Cookie 文件，开始首次登录…")
-    return cmd_login(cfg, as_json=as_json)
+        return cmd_login(cfg, as_json=as_json)
+
+    ok, reason = validate_cookie(cfg, store.get("cookie", ""))
+    if not ok:
+        log(f"♻️ Cookie 已失效（{reason}），开始重新登录…")
+        return cmd_login(cfg, as_json=as_json)
+
+    left = cookie_remaining_days(store)
+    age = cookie_age_days(store)
+    if left is not None:
+        log(f"✅ Cookie 仍有效，剩余 {left:.2f} 天（账龄 {age:.2f} 天）")
+        if left <= cfg.refresh_before_days:
+            log(f"♻️ 剩余不足 {cfg.refresh_before_days} 天，提前刷新以免断档…")
+            return cmd_login(cfg, as_json=as_json)
+    else:
+        log(f"✅ Cookie 仍有效（账龄 {age:.2f} 天，无过期时间信息）")
+        if age is not None and age >= cfg.warn_after_days:
+            log(f"♻️ 账龄 {age:.1f} 天 ≥ 阈值 {cfg.warn_after_days} 天，刷新…")
+            return cmd_login(cfg, as_json=as_json)
+
+    log("👍 无需刷新")
+    return EXIT_OK
 
 
 def main():
@@ -691,12 +765,25 @@ def main():
     ap.add_argument("command", choices=["status", "validate", "login", "refresh"])
     ap.add_argument("--env", default=".env", help="凭据文件路径（默认 .env）")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出结果（便于 CI 解析）")
+    ap.add_argument("--push-secret", action="store_true",
+                    help="登录成功后用 gh CLI 把 Cookie 回写到仓库 Secret"
+                         "（让 GitHub Actions 端完全无需登录，需已 gh auth login）")
+    ap.add_argument("--repo", default="",
+                    help="回写 Secret 的目标仓库，格式 owner/repo（默认取当前 git 仓库）")
     args = ap.parse_args()
 
     cfg = Config.load(args.env)
+    # 命令行开关优先级高于 .env
+    if args.push_secret:
+        cfg.push_secret = True
+    if args.repo:
+        cfg.repo = args.repo
     log(f"🔧 目标站点：{cfg.base_url} | Cookie 文件：{cfg.cookie_file}")
     if cfg.proxy:
         log(f"🔧 使用代理：{cfg.proxy}")
+    if cfg.push_secret:
+        log(f"☁️ 成功后会回写 Secret `{cfg.secret_name}`"
+            + (f" → {cfg.repo}" if cfg.repo else "（当前仓库）"))
 
     handlers = {
         "status": cmd_status,

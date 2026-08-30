@@ -1,47 +1,34 @@
-name: Refresh ikuuu Cookie
+name: ikuuu Cookie Health Check
 
-# ikuuu 的 Cookie 有效期约 7 天（以 expire_in 字段为准）。
-# 本工作流每 6 小时检查/刷新一次 Cookie，并把结果缓存供 checkin.yml 使用。
-# 本地开发：直接运行 python ikuuu_login.py login 即可生成/刷新 ikuuu_cookie.json。
+# 这个工作流**不尝试登录** —— ikuuu 的 Geetest v4 无法在 GitHub-hosted runner 上
+# 无人值守完成，硬跑只会白白超时失败。
+#
+# 职责：每天巡检一次 Secret 里的 IKUUU_COOKIE，快过期就发警告，失效就让工作流失败
+# （GitHub 会给仓库管理员发邮件），提醒你在本机跑一次 refresh。
+#
+# 刷新 Cookie 的正确姿势（本机，约 10 秒）：
+#   python ikuuu_login.py refresh --push-secret
 
 on:
   schedule:
-    # 每 6 小时跑一次（UTC）。如需调整频率，修改下面 cron 即可。
-    - cron: '0 */6 * * *'
+    # 每天 UTC 23:00（北京时间 07:00）巡检一次
+    - cron: '0 23 * * *'
   workflow_dispatch:
-    inputs:
-      force_login:
-        description: '强制重新登录（即使当前 Cookie 仍有效）'
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
-# 防止重叠运行；定时触发与手动触发时排队，不互相打断
 concurrency:
-  group: ikuuu-cookie-${{ github.ref }}
+  group: ikuuu-health-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  refresh:
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    # 凭据全部来自 Secrets，不会硬编码；脚本内部会对账号做脱敏处理
+    timeout-minutes: 5
     env:
-      IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
-      IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
-      IKUUU_TOTP_SECRET: ${{ secrets.IKUUU_TOTP_SECRET }}
+      IKUUU_COOKIE: ${{ secrets.IKUUU_COOKIE }}
       IKUUU_BASE_URL: ${{ secrets.IKUUU_BASE_URL || 'https://ikuuu.win' }}
-      IKUUU_PROXY: ${{ secrets.IKUUU_PROXY }}
-      IKUUU_USER_AGENT: ${{ secrets.IKUUU_USER_AGENT }}
-      IKUUU_REMEMBER: "1"
-      IKUUU_COOKIE_FILE: ikuuu_cookie.json
-      IKUUU_LOGIN_TIMEOUT: "300"
-      IKUUU_HEADLESS: "1"
-      IKUUU_WARN_AFTER_DAYS: "5"
 
     steps:
       - name: Checkout
@@ -51,43 +38,57 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
-      - name: Restore ikuuu Cookie Cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ikuuu_cookie.json
-          key: ikuuu-cookie-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            ikuuu-cookie-v1-
+      - name: Install Dependencies
+        # 只用 requests，不装 Playwright —— 巡检必须又快又稳
+        run: pip install requests
 
-      - name: Install Dependencies + Playwright Chromium
+      - name: Check Cookie Expiry
+        id: check
         run: |
-          pip install -r requirements-ikuuu.txt
-          python -m playwright install --with-deps chromium
+          python - <<'PY'
+          import json, os, sys, time
+          import requests
 
-      - name: Refresh Cookie
-        id: refresh
-        run: |
-          if [ "${{ inputs.force_login }}" = "true" ]; then
-            rm -f ikuuu_cookie.json
-          fi
-          python -u ikuuu_login.py login
+          cookie = os.environ.get("IKUUU_COOKIE", "").strip()
+          base = os.environ.get("IKUUU_BASE_URL", "https://ikuuu.win").rstrip("/")
+          if not cookie:
+              print("::error::Secret IKUUU_COOKIE 未设置")
+              sys.exit(1)
 
-      - name: Validate Cookie
-        run: |
-          python -u ikuuu_login.py validate
+          # expire_in 是 ikuuu 写在 cookie 里的过期时间戳（固定 7 天，不滑动续期）
+          expire_ts = None
+          for part in cookie.split(";"):
+              kv = part.strip().split("=", 1)
+              if len(kv) == 2 and kv[0].strip() == "expire_in":
+                  try:
+                      expire_ts = int(kv[1])
+                  except ValueError:
+                      pass
+          left = (expire_ts - time.time()) / 86400.0 if expire_ts else None
 
-      # 工作流失败时 GitHub 会默认向仓库管理员发送邮件通知。
-      # 如需要自定义 SMTP 邮件，可在此追加 dawidd6/action-send-mail 等步骤。
-      - name: Upload Debug Artifacts on Failure
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ikuuu-debug-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ikuuu_debug_*.png
-            ikuuu_debug_*.html
-            ikuuu_cookie.json
-          if-no-files-found: ignore
-          retention-days: 7
+          r = requests.get(
+              f"{base}/user",
+              headers={
+                  "Cookie": cookie,
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+              },
+              timeout=25, allow_redirects=False)
+          alive = r.status_code == 200
+
+          print(f"Cookie 有效性: {'有效' if alive else '失效'} (HTTP {r.status_code})")
+          if left is not None:
+              print(f"剩余天数: {left:.2f}")
+
+          if not alive:
+              print("::error::ikuuu Cookie 已失效，请在本机执行: "
+                    "python ikuuu_login.py refresh --push-secret")
+              sys.exit(1)
+
+          if left is not None and left <= 1.5:
+              print("::warning::ikuuu Cookie 剩余不足 1.5 天，"
+                    "请尽快在本机执行: python ikuuu_login.py refresh --push-secret")
+          elif left is not None and left <= 3:
+              print(f"::notice::ikuuu Cookie 剩余 {left:.2f} 天")
+          PY
