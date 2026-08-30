@@ -67,11 +67,24 @@ def get_glados_cookies():
     if not raw: return []
     return [extract_cookie(c) for c in (raw.split('\n') if '\n' in raw else raw.split('&')) if c.strip()]
 
+def _load_ikuuu_cookie_file(path="ikuuu_cookie.json"):
+    """读取 ikuuu_login.py 生成的 cookie JSON，返回 [cookie_str] 或 []。
+    环境变量 IKUUU_COOKIE 优先级高于本文件。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cookie = data.get("cookie", "")
+        if cookie:
+            return [cookie]
+    except Exception:
+        pass
+    return []
+
 def get_ikuuu_accounts():
-    """优先读取 IKUUU_COOKIE（绕过验证码）；回退到账号密码"""
+    """优先读取 IKUUU_COOKIE；其次读取 ikuuu_cookie.json；回退到账号密码。"""
     cookie_raw = os.environ.get('IKUUU_COOKIE', '')
-    if cookie_raw:
-        cookies = [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()]
+    cookies = [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()] if cookie_raw else _load_ikuuu_cookie_file()
+    if cookies:
         return [('cookie', c) for c in cookies]
     # 回退到账号密码
     accounts_raw = os.environ.get('IKUUU_ACCOUNTS', '')
@@ -87,10 +100,10 @@ def get_ikuuu_accounts():
     return [('pwd', (email, pwd))] if email and pwd else []
 
 def get_ikuuu_cookies():
-    """获取 ikuuu Cookie 列表（兼容新旧环境变量）"""
+    """获取 ikuuu Cookie 列表（兼容新旧环境变量与 ikuuu_cookie.json）"""
     cookie_raw = os.environ.get('IKUUU_COOKIE', '')
     if not cookie_raw:
-        return []
+        return _load_ikuuu_cookie_file()
     return [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()]
 
 def get_smai_sessions():

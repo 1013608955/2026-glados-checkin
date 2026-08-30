@@ -1,0 +1,4 @@
+# ikuuu 自动登录所需依赖（与签到主流程的 requirements.txt 分开，
+# 因为 Playwright 体积大，只有需要登录取 Cookie 时才装）
+# 安装浏览器内核：python -m playwright install chromium
+playwright>=1.40.0

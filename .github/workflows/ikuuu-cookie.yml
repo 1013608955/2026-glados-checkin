@@ -1,0 +1,93 @@
+name: Refresh ikuuu Cookie
+
+# ikuuu 的 Cookie 有效期约 7 天（以 expire_in 字段为准）。
+# 本工作流每 6 小时检查/刷新一次 Cookie，并把结果缓存供 checkin.yml 使用。
+# 本地开发：直接运行 python ikuuu_login.py login 即可生成/刷新 ikuuu_cookie.json。
+
+on:
+  schedule:
+    # 每 6 小时跑一次（UTC）。如需调整频率，修改下面 cron 即可。
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_login:
+        description: '强制重新登录（即使当前 Cookie 仍有效）'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# 防止重叠运行；定时触发与手动触发时排队，不互相打断
+concurrency:
+  group: ikuuu-cookie-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # 凭据全部来自 Secrets，不会硬编码；脚本内部会对账号做脱敏处理
+    env:
+      IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
+      IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
+      IKUUU_TOTP_SECRET: ${{ secrets.IKUUU_TOTP_SECRET }}
+      IKUUU_BASE_URL: ${{ secrets.IKUUU_BASE_URL || 'https://ikuuu.win' }}
+      IKUUU_PROXY: ${{ secrets.IKUUU_PROXY }}
+      IKUUU_USER_AGENT: ${{ secrets.IKUUU_USER_AGENT }}
+      IKUUU_REMEMBER: "1"
+      IKUUU_COOKIE_FILE: ikuuu_cookie.json
+      IKUUU_LOGIN_TIMEOUT: "300"
+      IKUUU_HEADLESS: "1"
+      IKUUU_WARN_AFTER_DAYS: "5"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Restore ikuuu Cookie Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ikuuu_cookie.json
+          key: ikuuu-cookie-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ikuuu-cookie-v1-
+
+      - name: Install Dependencies + Playwright Chromium
+        run: |
+          pip install -r requirements-ikuuu.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Refresh Cookie
+        id: refresh
+        run: |
+          if [ "${{ inputs.force_login }}" = "true" ]; then
+            rm -f ikuuu_cookie.json
+          fi
+          python -u ikuuu_login.py login
+
+      - name: Validate Cookie
+        run: |
+          python -u ikuuu_login.py validate
+
+      # 工作流失败时 GitHub 会默认向仓库管理员发送邮件通知。
+      # 如需要自定义 SMTP 邮件，可在此追加 dawidd6/action-send-mail 等步骤。
+      - name: Upload Debug Artifacts on Failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ikuuu-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ikuuu_debug_*.png
+            ikuuu_debug_*.html
+            ikuuu_cookie.json
+          if-no-files-found: ignore
+          retention-days: 7

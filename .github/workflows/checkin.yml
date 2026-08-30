@@ -59,6 +59,14 @@ jobs:
           restore-keys: |
             checkin-state-
 
+      - name: Restore ikuuu Cookie Cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ikuuu_cookie.json
+          key: ikuuu-cookie-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ikuuu-cookie-v1-
+
       - name: Install mihomo (Clash Meta, 供 W42_SUB 订阅代理)
         run: |
           if [ -x ./mihomo ]; then

@@ -1,4 +1,12 @@
 # ===== 敏感 / 登录态（切勿提交） =====
+# 本地凭据：存放 IKUUU_EMAIL / IKUUU_PASSWORD 等，绝不能入库
+.env
+.env.*
+*.env
+# ikuuu 自动登录产物（含会话 cookie 明文）
+ikuuu_cookie.json
+ikuuu_debug_*.png
+ikuuu_debug_*.html
 cookie_live.txt
 W42_SECRETS.txt
 cookie.txt
