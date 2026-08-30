@@ -68,8 +68,7 @@ def get_glados_cookies():
     return [extract_cookie(c) for c in (raw.split('\n') if '\n' in raw else raw.split('&')) if c.strip()]
 
 def _load_ikuuu_cookie_file(path="ikuuu_cookie.json"):
-    """读取 ikuuu_login.py 生成的 cookie JSON，返回 [cookie_str] 或 []。
-    环境变量 IKUUU_COOKIE 优先级高于本文件。"""
+    """读取 ikuuu_login.py 生成的 cookie JSON，返回 [cookie_str] 或 []。"""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -81,9 +80,16 @@ def _load_ikuuu_cookie_file(path="ikuuu_cookie.json"):
     return []
 
 def get_ikuuu_accounts():
-    """优先读取 IKUUU_COOKIE；其次读取 ikuuu_cookie.json；回退到账号密码。"""
-    cookie_raw = os.environ.get('IKUUU_COOKIE', '')
-    cookies = [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()] if cookie_raw else _load_ikuuu_cookie_file()
+    """取 ikuuu Cookie 的优先级：**ikuuu_cookie.json > IKUUU_COOKIE > 账号密码**。
+
+    文件优先的原因：CI 里这个文件由 ikuuu-cookie.yml 无头登录后经 Actions Cache
+    传入，永远是最新的；而 IKUUU_COOKIE Secret 通常是手动填的旧快照，
+    若优先用它会拿过期 Cookie 覆盖掉刚刷新的，导致签到失败。
+    """
+    cookies = _load_ikuuu_cookie_file()
+    if not cookies:
+        cookie_raw = os.environ.get('IKUUU_COOKIE', '')
+        cookies = [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()] if cookie_raw else []
     if cookies:
         return [('cookie', c) for c in cookies]
     # 回退到账号密码
@@ -100,10 +106,13 @@ def get_ikuuu_accounts():
     return [('pwd', (email, pwd))] if email and pwd else []
 
 def get_ikuuu_cookies():
-    """获取 ikuuu Cookie 列表（兼容新旧环境变量与 ikuuu_cookie.json）"""
+    """获取 ikuuu Cookie 列表：优先 ikuuu_cookie.json，其次 IKUUU_COOKIE。"""
+    from_file = _load_ikuuu_cookie_file()
+    if from_file:
+        return from_file
     cookie_raw = os.environ.get('IKUUU_COOKIE', '')
     if not cookie_raw:
-        return _load_ikuuu_cookie_file()
+        return []
     return [c.strip() for c in (cookie_raw.split('\n') if '\n' in cookie_raw else cookie_raw.split('&')) if c.strip()]
 
 def get_smai_sessions():

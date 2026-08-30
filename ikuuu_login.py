@@ -483,9 +483,12 @@ def playwright_login(cfg):
                 log("   ⚠️ 页面未找到 #remember-me，跳过勾选")
 
             log("   已填入凭据，先打开并完成 Geetest 验证，再提交登录表单")
+            # 实测（2026-08-31）：ikuuu 用的是 Geetest V4 的 `captcha_type=ai`
+            # 自适应一键验证 —— 点一下按钮就 verify success，不弹滑块/点选，
+            # 因此**无头模式同样能过**，无需第三方打码服务。
+            # 只有当 IP/指纹被判为高风险时才会降级成 slide，那种情况才需要人工。
             if cfg.headless:
-                log("   ⚠️ 当前为无头模式，无法看到 Geetest 弹窗；"
-                    "请设 IKUUU_HEADLESS=0 后重跑，在浏览器窗口里人工完成验证")
+                log("   无头模式：ikuuu 为 ai 型一键验证，点击后通常直接通过")
 
             deadline = time.time() + cfg.login_timeout
             phase = "timeout"

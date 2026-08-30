@@ -7,23 +7,33 @@
 - **Phase 1（本地）**：用 Playwright 驱动浏览器完成登录，自动把 Cookie 写入 `ikuuu_cookie.json`。
 - **Phase 2（GitHub Actions）**：定时检查/刷新 Cookie，并把 Cookie 通过 Actions Cache 共享给 `checkin.yml`。
 
-## 核心限制说明（必读）
+## 好消息：零成本 + 全网无人值守（2026-08-31 实测）
 
-ikuuu 的登录页接入了 **Geetest v4 人机验证**，且 Cookie 是**固定 7 天有效期、不滑动续期**
-（实测 `GET /user` 不返回 `Set-Cookie`，`expire_in` 恒定 7 天）。这两点决定了架构：
+ikuuu 登录页确实用了 **Geetest V4**，但它选的是 **`captcha_type=ai`（自适应一键验证）**：
 
-> **Geetest 的设计目的就是区分人和机器** —— 所以「零成本」和「100% 无人值守」不可兼得。
+> 真实浏览器点一下「点我开始验证」就直接 `verify success`，**不会弹滑块、不会要点选**。
 
-因此本方案采用**职责分离**：
+所以**无头浏览器同样能过**，整个链路 8 秒完成，**不需要任何第三方打码服务**。
 
-| 环节 | 在哪里跑 | 是否需要人 |
-|------|----------|-----------|
-| 签到（每天 2 次） | GitHub Actions | ❌ 全自动 |
-| 刷新 Cookie（每 ~6 天） | 本机计划任务 | ✅ 点一下验证（约 10 秒） |
+实测记录（无头模式）：
 
-- ✅ `python ikuuu_login.py refresh`：Cookie 还够用就直接退出，不够才弹浏览器刷新。
-- ✅ GitHub Actions 端只做签到、从不碰登录，因此**完全无人值守，也不会因验证码超时而失败**。
-- ⚠️ 若追求连刷新都无人值守，需接入第三方打码服务（见文末扩展点）。
+```
+[03:19:24] 已填入凭据，先打开并完成 Geetest 验证，再提交登录表单
+[03:19:25] Geetest：已点击「点我开始验证」
+[03:19:26] Geetest：✅ 验证通过          ← 1 秒后直接通过
+[03:19:28] ✅ 登录并校验成功（9 个 Cookie）
+```
+
+唯一的限制是 **Cookie 固定 7 天、不滑动续期**（`GET /user` 不返回 `Set-Cookie`），
+所以每 7 天必须重登一次 —— 但这件事 Actions 会自动做，你什么都不用管。
+
+| 环节 | 频率 | 在哪跑 | 需要人吗 |
+|------|------|--------|----------|
+| 签到 | 每天 2 次 | GitHub Actions | ❌ |
+| 刷新 Cookie | 每 3 天 | GitHub Actions（无头） | ❌ |
+
+> ⚠️ 兜底：只有当 IP / 浏览器指纹被 Geetest 判为高风险时，`ai` 才会降级成 `slide`（滑块），
+> 那时无头会超时失败。届时的降级方案见文末「兜底方案」。
 
 ## 登录协议（已逆向，供扩展用）
 
@@ -131,113 +141,108 @@ python ikuuu_login.py status
 
 `checkin.py` 会优先读 `IKUUU_COOKIE` 环境变量；环境变量为空时自动读取该文件。
 
-## Phase 2：GitHub Actions（只签到，不登录）
+## Phase 2：GitHub Actions（全自动，无需打码服务）
 
 ### 1. Secrets 清单
 
-Actions 端只需要一个 Secret：
+在 `Settings → Secrets and variables → Actions → Repository secrets` 里添加：
 
 | Secret | 必填 | 说明 |
 |--------|------|------|
-| `IKUUU_COOKIE` | 是 | 本机刷新后回写的 Cookie 串 |
-| `IKUUU_BASE_URL` | 否 | 默认 `https://ikuuu.win`，备用域名可改 |
-
-> 登录凭据（`IKUUU_EMAIL` / `IKUUU_PASSWORD`）**只放在本机 `.env`**，不进 GitHub ——
-> Actions 从不登录，也就没有泄露面。
+| `IKUUU_EMAIL` | ✅ | 登录邮箱 |
+| `IKUUU_PASSWORD` | ✅ | 登录密码 |
+| `IKUUU_TOTP_SECRET` | 否 | 账号开了 2FA 才需要 |
+| `IKUUU_PROXY` | 否 | runner 出口访问 ikuuu 需要代理时才填 |
+| `IKUUU_BASE_URL` | 否 | 默认 `https://ikuuu.win` |
+| `IKUUU_COOKIE` | 否 | **仅作兜底**，正常情况下用不到（见「Cookie 传递」） |
 
 ### 2. 工作流职责拆分
 
-| 工作流 | 频率 | 做什么 | 装 Playwright 吗 |
-|--------|------|--------|------------------|
-| `checkin.yml` | 每天 2 次 | 四平台签到，直接消费 `IKUUU_COOKIE` | ❌ |
-| `ikuuu-cookie.yml` | 每天 1 次 | **健康巡检**：校验 Cookie、算剩余天数 | ❌ |
+| 工作流 | 频率 | 做什么 | 需要 Chromium |
+|--------|------|--------|----------------|
+| `ikuuu-cookie.yml` | 每 3 天 | 无头登录刷新 Cookie → 写入 Actions Cache | ✅ |
+| `checkin.yml` | 每天 2 次 | 四平台签到，从 Cache 取 Cookie | ❌ |
 
-`ikuuu-cookie.yml` 的巡检逻辑：
+`ikuuu-cookie.yml` 流程：
 
-- Cookie 失效（`GET /user` 跳登录页）→ `::error::` + 退出码 1 → **工作流失败，GitHub 自动给你发邮件**。
-- 剩余 ≤ 1.5 天 → `::warning::`，提醒你该刷新了。
-- 剩余 ≤ 3 天 → `::notice::`，温和提示。
-- 只需要 `requests`，几秒钟跑完。
+1. 恢复上一次的 `ikuuu_cookie.json`（Actions Cache）。
+2. 安装 Playwright + Chromium。
+3. `python ikuuu_login.py refresh` —— **智能判断**：剩余 > 2.5 天就直接退出，不消耗验证。
+4. `python ikuuu_login.py validate` 二次校验。
+5. 把 Cookie 文件写回 Cache（key 带 `run_id`，每次都会存新条目）。
 
-### 3. 零成本闭环：本机刷新 + 自动回写 Secret
+失败时：GitHub 会自动给仓库管理员发邮件，并保留截图和 HTML 作为 artifact（7 天）。
 
-这是不用打码平台时**人工成本最低**的做法：每 ~6 天你点一次验证（约 10 秒），其余全自动。
+### 3. Cookie 如何在两个 workflow 之间传递
 
-#### 3.1 前置条件：给 PAT 开 Secrets 写权限
+用 **Actions Cache**，key 前缀统一为 `ikuuu-cookie-v1-`：
 
-`gh secret set` 需要 token 具备 Secrets 写权限。你的 `gh` 已登录，但默认的
-fine-grained PAT 通常没开，会报：
+```yaml
+key: ikuuu-cookie-v1-${{ github.run_id }}-${{ github.run_attempt }}
+restore-keys: |
+  ikuuu-cookie-v1-
+```
+
+- `ikuuu-cookie.yml` 每次写入一条新 Cache（key 唯一，必然保存）。
+- `checkin.yml` 用前缀 restore，总能拿到最近一次刷新的 Cookie。
+- 每 3 天刷新一次，远低于 Cache 的 7 天回收阈值，不会失效。
+
+**为什么不用 Secret 传递 Cookie？** 因为 `GITHUB_TOKEN` 无法写 Secret，
+必须额外配置一个有 Secrets 写权限的 PAT，多一个依赖。Cache 方案零配置。
+
+`checkin.py` 的读取优先级是 **`ikuuu_cookie.json` > `IKUUU_COOKIE`**：
+文件由 workflow 维护永远最新，而 Secret 里的往往是手动填的旧快照，
+若优先用 Secret，会拿过期 Cookie 覆盖掉刚刷新的，导致签到失败。
+
+### 4. 兜底方案（Geetest 降级成滑块时）
+
+如果哪天 Actions 的无头环境被 Geetest 判为高风险，`captcha_type` 会从 `ai`
+降级成 `slide`，点击后弹出滑块、无人能完成 → 工作流超时失败。届时按优先级选：
+
+**① 本机刷新 + 回写 Secret（零成本）**
+
+```bash
+python ikuuu_login.py refresh --push-secret
+```
+
+需要给 PAT 开 Secrets 写权限，否则会报：
 
 ```
 failed to fetch public key: HTTP 403: Resource not accessible by personal access token
 ```
 
-开启步骤：
+开启：<https://github.com/settings/personal-access-tokens> → 选那个
+**Repository access = all repositories** 的 token（本仓库是 `openclaw` 那个）→
+**Repository permissions** → **Secrets** → **Read and write** → 保存 → `gh auth refresh`。
 
-1. 打开 <https://github.com/settings/personal-access-tokens>
-2. 找到 `gh` 正在用的那个 fine-grained token（`gh auth status` 可看账号）
-3. **Repository permissions** → **Secrets** → 改成 **Read and write**
-4. 保存后重新登录一次：`gh auth login`（或 `gh auth refresh`）
+> 注意：权限列表里叫 **Secret scanning** 的那几项是「秘密扫描告警」，不是我们要的
+> **Secrets**（管理仓库 Actions Secrets），别选错。
 
-验证：
+验证：`gh secret list --repo 1013608955/2026-glados-checkin`
 
-```bash
-gh secret list --repo 1013608955/2026-glados-checkin
-```
-
-能看到 secret 列表即表示权限 OK。
-
-#### 3.2 日常刷新命令
-
-```bash
-# Cookie 还够用 → 直接退出，不打扰
-# 快过期/已失效  → 弹浏览器，你点一下验证，然后自动回写 Secret
-python ikuuu_login.py refresh --push-secret
-```
-
-不想每次都敲参数，可以把开关写进 `.env`：
+可写进 `.env` 省得每次敲参数：
 
 ```ini
 IKUUU_PUSH_SECRET=1
 IKUUU_REPO=1013608955/2026-glados-checkin
-IKUUU_REFRESH_BEFORE_DAYS=1.5   # 剩余不足 1.5 天才刷新
 ```
 
-#### 3.3 挂到 Windows 计划任务
+**② 接入打码服务（约 $0.05/月）**
 
-每天跑一次即可（脚本自己会判断要不要刷新，不刷新时 2 秒退出）。
+Capsolver 的 Geetest v4 = **$1.2/1000 次**（最低充值 $6）。登录协议已完整逆向
+（见上文），实现时**不需要浏览器**：
 
-用管理员权限的 PowerShell 注册：
+1. `GET /auth/login` → base64 解页面 → 正则提 `captchaId`
+2. 调 Capsolver `GeeTestTaskProxyless`：`{websiteURL, captchaId}`
+3. 拿 `lot_number` / `captcha_output` / `pass_token` / `gen_time`
+4. 按上文格式 `POST /auth/login`（纯 `requests`）
+5. 写 `ikuuu_cookie.json`
 
-```powershell
-$action  = New-ScheduledTaskAction -Execute "python" `
-           -Argument "ikuuu_login.py refresh --push-secret" `
-           -WorkingDirectory "C:\Users\Admin\.openclaw\workspace\2026-glados-checkin"
-$trigger = New-ScheduledTaskTrigger -Daily -At 10:00
-Register-ScheduledTask -TaskName "ikuuu Cookie 刷新" -Action $action -Trigger $trigger -Description "ikuuu Cookie 到期前自动刷新并回写 GitHub Secret"
-```
+**③ 开源纯 Python solver**
 
-> 如果想彻底静默（不弹浏览器窗口到前台），可以配合 `-WindowStyle Hidden` 的
-> wscript 包装，参考你已有的「游戏更新检查」计划任务做法。
-> 但注意：**需要你点验证的那天必须能看到窗口**，所以建议保留可见窗口。
-
-### 4. 追求 100% 无人值守：接入打码服务（可选）
-
-若连「每 6 天点一次」都想省掉，接入 Capsolver（Geetest v4 = **$1.2/1000 次**，
-按每月 30-60 次算约 **$0.05/月**，最低充值 $6）。
-
-好消息是登录协议已经完整逆向（见上文），所以**不需要浏览器**，实现路径很短：
-
-1. `GET /auth/login` → 从 base64 页面里正则提取 `captchaId`。
-2. 调 Capsolver `GeeTestTaskProxyless`：`{websiteURL, captchaId}`。
-3. 拿到 `lot_number` / `captcha_output` / `pass_token` / `gen_time`。
-4. 按上文格式 `POST /auth/login`（纯 `requests`，无需 Playwright）。
-5. 成功后写 `ikuuu_cookie.json` 并可复用 `--push-secret` 回写。
-
-接入后 `ikuuu-cookie.yml` 就能真正每 6 小时自动刷新，且不需要装 Chromium。
-
-> 当前**没有内置**自动识别：一是需要付费 API Key，二是 Geetest 形态会随站点版本
-> 变化、需要长期维护。`Config` 类已预留扩展位，后续追加很容易。
+[`xKiian/GeekedTest`](https://github.com/xKiian/GeekedTest) 是纯 Python 实现的
+Geetest v4 solver，支持 `slide` / `icon` / `gobang` / `ai`，不需要浏览器。
+风险是 Geetest 一改版常量就失效，需要跟着维护。
 
 ## 本地调试常见问题
 
@@ -270,8 +275,10 @@ python checkin.py
 - 新增 `ikuuu_login.py`：Playwright 登录、Cookie 落盘、TOTP、脱敏日志、失败留证、
   `refresh` 智能刷新（按剩余天数决策）、`--push-secret` 自动回写 GitHub Secret。
 - 新增 `requirements-ikuuu.txt` 与 `ikuuu.env.example`。
-- 更新 `checkin.py`：未设置 `IKUUU_COOKIE` 时自动读取 `ikuuu_cookie.json`。
-- `.github/workflows/ikuuu-cookie.yml`：改为**只读健康巡检**（不再尝试登录，
-  因为 Geetest 在 runner 上过不了，硬跑只会超时失败）。
-- `.github/workflows/checkin.yml`：直接用 `IKUUU_COOKIE` Secret 签到，移除 Cache 步骤。
+- **`checkin.py` 读取优先级改为 `ikuuu_cookie.json` > `IKUUU_COOKIE`**：
+  文件由 workflow 维护永远最新，避免过期 Secret 覆盖刚刷新的 Cookie。
+- `.github/workflows/ikuuu-cookie.yml`：每 3 天**无头登录**刷新 Cookie 并写入
+  Actions Cache。实测 ikuuu 用 `captcha_type=ai` 一键验证，无头 8 秒即可通过，
+  **不需要第三方打码服务**。失败时 GitHub 自动发邮件 + 保留截图/HTML。
+- `.github/workflows/checkin.yml`：从 Cache 恢复 Cookie 用于签到。
 - `.gitignore` 已排除 `.env`、`ikuuu_cookie.json`、`ikuuu_debug_*`。

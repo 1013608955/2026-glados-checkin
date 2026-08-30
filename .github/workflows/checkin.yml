@@ -59,9 +59,15 @@ jobs:
           restore-keys: |
             checkin-state-
 
-      # 注意：ikuuu 的 Cookie 由本机 `ikuuu_login.py refresh --push-secret` 刷新后
-      # 回写到 Secret IKUUU_COOKIE，Actions 端只消费、从不登录（Geetest 无法在
-      # 无人值守的 runner 上完成）。过期巡检见 ikuuu-cookie.yml。
+      - name: Restore ikuuu Cookie Cache
+        # ikuuu-cookie.yml 每 3 天用无头浏览器刷新一次 Cookie 并写回这里。
+        # checkin.py 优先使用该文件（而非可能已过期的 IKUUU_COOKIE Secret）。
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ikuuu_cookie.json
+          key: ikuuu-cookie-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ikuuu-cookie-v1-
 
       - name: Install mihomo (Clash Meta, 供 W42_SUB 订阅代理)
         run: |
