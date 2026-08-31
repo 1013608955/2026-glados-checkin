@@ -109,3 +109,33 @@ keep-alive.yml ── 每日提交 last-active.txt 保持仓库活跃（⚠️ �
 6. **M2/M6**：token 落盘收敛 + 过期预警。
 
 > 注：上一轮已完成的（脱敏、去 IP 回显、pin SHA、最小权限、concurrency、artifact、mihomo 下载修复）不在本清单重复。
+
+---
+
+## 四、完成情况复核（2026-09-01）
+
+`HIGH` 与 `MEDIUM` 全部关闭。逐条落点（供回归时对照，别再从零排查）：
+
+| 项 | 状态 | 落点 |
+|---|---|---|
+| H1 | ✅ | `check_expiry.py` 改 `from _ws import WS`（消除第 3 份漂移实现，顺带修了忽略 FIN 导致的分帧截断）；已 `git rm --cached`，`.gitignore` 生效。当前 `git ls-files -i -c` 为空，无「被跟踪却已忽略」的文件。 |
+| H2 | ✅ | `_drive()` 通用驱动；**四平台全部接入**（GLaDOS / ikuuu / SMAI / 42w）。ikuuu 是最后一个——因 cookie 直签与密码登录签名不同，长期保留着 41 行内联副本，最终靠 `_ikuuu_unit()` 统一入口 + `_ikuuu_warn()` 动态诊断收口。 |
+| H3 | ✅ | `log_traceback(context)` 输出完整堆栈；推送异常带 `type(e).__name__`。 |
+| M1 | ✅ | `keep-alive.yml` 已 pin `actions/checkout@11d5960...`（v4）。 |
+| M2 | ✅ | 配了 `SMAI_PERSIST_PAT`/`REPO_PAT` 时不写明文文件，直接走 `gh secret set`。 |
+| M3 | ✅ | 用 `extract_node_block()` 块级兜底支持多行 YAML 写法（**保持纯标准库，未引 PyYAML**）；`DEFAULT_NODE` 可由 `W42_SUB_NODE` 覆盖。 |
+| M4 | ✅ | ikuuu key 的嵌套推导式改显式 `for` 循环；顶层只留 `date`，`datetime/timedelta` 按需局部导入并注释说明。 |
+| M5 | ✅ | `voapi_tokens` 死代码已删；`requirements.txt` 移除 `PySocks`。 |
+| M6 | ✅ | `w42_cookie_watch`：对 `W42_COOKIE` 取 sha256 指纹跨天留存，连续 ≥18 天预警。 |
+
+**仍为 LOW 且主动接受**（审计原文即标注「可接受」）：L1 结构化日志（仍用 `log()` 包装 print）、
+L2 mihomo 就绪探测走 gstatic、L3 中文子串判定、L4 模块拆分（H2 已解决同源问题的主要部分）、
+L5 concurrency 语义（当前单分支无影响）。
+
+### H2 收口时的等价性验证方法（可复用）
+改「驱动层」这类横切重构，靠肉眼 review 不可靠。本次用的办法：
+1. 把旧实现原样复制进测试脚本，与新实现**同时**跑同一批桩数据；
+2. 覆盖边界：空账号、全成功、cookie 过期带/不带诊断、密码过期、上午跳过、失败但非过期、混合成功+过期；
+3. 断言三件事分别相等：成功计数/total、`expired` 警告文本、输出行（归一化后才比）；
+4. 最后用真实凭据跑一次端到端冒烟（本次实际签到成功 670 MB）。
+若归一化后仍有差异，说明是行为漂移而非格式调整，必须回滚。
