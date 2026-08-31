@@ -659,7 +659,9 @@ def _drive(platform, units, is_morning, state, expired, results):
                     lines 为要追加到 results 的结果文本列表
       - skip_lines: (可选) 可调用，返回跳过时的结果行列表；
                     缺省用通用 '• {display}: 上午已签，跳过'
-      - warn:       (可选) 过期警告文本；缺省用 '{display} 可能过期'
+      - warn:       (可选) 过期警告文本，或 callable(msg)->str（用于需要按失败原因
+                    动态诊断的平台，如 ikuuu 的 diagnose_ikuuu_error）；
+                    缺省用 '{display} 可能过期'
     """
     total = len(units)
     if not total:
@@ -685,7 +687,10 @@ def _drive(platform, units, is_morning, state, expired, results):
             record_success(state, platform, u['key'])
             success += 1
         elif is_expired(platform, msg):
-            expired.append(u.get('warn') or f"{u['display']} 可能过期")
+            w = u.get('warn')
+            if callable(w):
+                w = w(msg)
+            expired.append(w or f"{u['display']} 可能过期")
         results.extend(lines)
     return success, total
 
@@ -720,6 +725,31 @@ def _w42_unit(ck, uid, fallback, key):
     return msg, ok, [f"• {uname}: {msg}"]
 
 
+def _ikuuu_unit(mode, val, display, key):
+    """ikuuu 两种登录形态（Cookie 直签 / 账号密码登录）共用同一个执行入口。"""
+    log(f"  ikuuu 签到... ({key})")
+    if mode == 'cookie':
+        msg, ok = ikuuu_checkin_cookie(val)
+    else:
+        email, pwd = val
+        msg, ok = ikuuu_pwd_login(email, pwd)
+    # 统一带 '• ' 前缀：此前密码模式漏了前缀，与其它平台/同平台 cookie 模式不一致
+    return msg, ok, [f"• {display}: {msg}"]
+
+
+def _ikuuu_warn(display, mode):
+    """ikuuu 的动态过期诊断：先尝试 diagnose_ikuuu_error 给可操作的原因，
+    拿不到再退回按登录形态区分的兜底文案。"""
+    def _warn(msg):
+        diag = diagnose_ikuuu_error(msg)
+        if diag:
+            return f"📶 ikuuu [{display}] {diag}"
+        if mode == 'cookie':
+            return f"📶 ikuuu [{display}] Cookie 可能过期"
+        return f"📶 ikuuu [{display}] 账号可能失效"
+    return _warn
+
+
 def main():
     # 获取北京时间
     beijing_time = get_beijing_time()
@@ -741,10 +771,19 @@ def main():
     smai_user_ids = get_smai_user_ids()
     w42_cookies = get_w42_cookies()
     w42_uids = get_w42_uids()
+    # ikuuu 的 key：cookie 模式用 "cookie_N"（N 会随数组顺序变，但账号集合稳定），
+    # 密码模式用 email（跨天唯一且稳定，便于「上午成功→下午跳过」按账号记忆）。
+    ikuuu_keys = []
+    for i, (mode, val) in enumerate(ikuuu_accounts):
+        if mode == 'cookie':
+            ikuuu_keys.append(f"cookie_{i+1}")
+        else:
+            # 密码模式 val 形如 (email, password)；极端情况下退化成裸字符串则直接用
+            ikuuu_keys.append(val[0] if isinstance(val, tuple) else val)
+
     config = {
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
-        # ikuuu: cookie 用 "cookie_N" 做 key，密码用 email 做 key
-        'ikuuu': [f"cookie_{i+1}" if mode == 'cookie' else email for i, (mode, val) in enumerate(ikuuu_accounts) for email in [val[0] if isinstance(val, tuple) else val]],
+        'ikuuu': ikuuu_keys,
         'smai': [s[:20]+"..." for s in smai_sessions],
         'w42': [c[:20]+"..." for c in w42_cookies],
     }
@@ -796,46 +835,22 @@ def main():
 
     # ========== ikuuu ==========
     results.append("\n### 📶 ikuuu 签到结果")
-    i_success = 0; i_total = len(ikuuu_accounts)
     if ikuuu_accounts:
-        msgs = []
-        for i, acct in enumerate(ikuuu_accounts):
-            mode, val = acct
-            if mode == 'cookie':
-                display = f"cookie_{i+1}"
-                key = display
-            else:
-                email_val = val[0]
-                display = email_val
-                key = email_val
-            if is_skipped(state, 'ikuuu', key, is_morning):
-                msgs.append(f"{display}: 上午已签，跳过")
-                i_success += 1
-            elif mode == 'cookie':
-                msg, ok = ikuuu_checkin_cookie(val)
-                msgs.append(f"• {display}: {msg}")
-                if ok:
-                    record_success(state, 'ikuuu', key)
-                    i_success += 1
-                elif is_expired('ikuuu', msg):
-                    # 智能诊断
-                    diagnosis = diagnose_ikuuu_error(msg)
-                    if diagnosis:
-                        expired.append(f"📶 ikuuu [{display}] {diagnosis}")
-                    else:
-                        expired.append(f"📶 ikuuu [{display}] Cookie 可能过期")
-            else:
-                email_val, pwd_val = val
-                msg, ok = ikuuu_pwd_login(email_val, pwd_val)
-                msgs.append(f"{display}: {msg}")
-                if ok:
-                    record_success(state, 'ikuuu', key)
-                    i_success += 1
-                elif is_expired('ikuuu', msg):
-                    expired.append(f"📶 ikuuu [{display}] 账号可能失效")
-        results.append(f"• 结果：{' | '.join(msgs)}")
+        units = []
+        for i, (mode, val) in enumerate(ikuuu_accounts):
+            # 直接复用上面构造好的 ikuuu_keys[i]，保证「跳过判定用的 key」与
+            # 「成功记录的 key」永远是同一个，杜绝两处逻辑漂移。
+            key = ikuuu_keys[i]
+            units.append({
+                'key': key,
+                'display': key,
+                'warn': _ikuuu_warn(key, mode),
+                'run': lambda mode=mode, val=val, key=key: _ikuuu_unit(mode, val, key, key),
+            })
+        i_success, i_total = _drive('ikuuu', units, is_morning, state, expired, results)
     else:
         results.append("• 未配置，跳过")
+        i_success, i_total = 0, 0
 
     # ========== SMAI ==========
     results.append("\n### ✅ SMAI.AI 签到结果")
