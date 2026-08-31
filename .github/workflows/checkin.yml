@@ -69,19 +69,39 @@ jobs:
           restore-keys: |
             ikuuu-cookie-v1-
 
-      - name: Install mihomo (Clash Meta, 供 W42_SUB 订阅代理)
+      - name: Install mihomo (Clash Meta, 仅 42w 订阅代理需要)
+        # mihomo 只服务于 W42_SUB 的一条隧道，绝不该拖累 GLaDOS / ikuuu 签到。
+        # 三重防护：
+        #   ① 未配 W42_SUB 直接跳过，省掉每次几十 MB 下载
+        #   ② continue-on-error —— 装失败也继续跑签到（42w 降级为直连）
+        #   ③ 版本钉死 + SHA256 校验，不再依赖 api.github.com
+        #
+        # 历史故障（2026-08-31）：原本用匿名 curl 查 latest 版本号，
+        # runner 共享 IP 触发 api.github.com 60 次/小时限流，返回体没有
+        # "tag_name" → grep 退出码 1 → bash -e 下整条赋值语句失败 →
+        # set -e 立刻终止，0.34 秒 exit 1 且零输出，导致整个 job 报红。
+        continue-on-error: true
+        env:
+          MIHOMO_VER: v1.19.30
+          # 官方 release 不发布校验和文件，这里用预先算好的值钉死（防供应链投毒）。
+          # 升级 MIHOMO_VER 时必须同步更新此值。
+          MIHOMO_SHA256: cf06ce2c7d1421bdbda14ee4a5b6046672dc35ebf8eecd8e77504ec3c0ed9a84
         run: |
+          if [ -z "${W42_SUB:-}" ]; then
+            echo "未配置 W42_SUB，跳过 mihomo 安装"
+            exit 0
+          fi
           if [ -x ./mihomo ]; then
             echo "mihomo 已存在，跳过下载"
-          else
-            VER=$(curl -s https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | grep -oP '"tag_name": "\K[^"]+')
-            echo "mihomo 版本: $VER"
-            curl -fsSL "https://github.com/MetaCubeX/mihomo/releases/download/$VER/mihomo-linux-amd64-$VER.gz" -o mihomo.gz
-            # 从 GitHub Releases 经 HTTPS 下载。注意：mihomo 官方 release 不发布
-            # 独立校验和文件，完整性依赖 GitHub 分发链路（TLS）；如需更强校验可改为
-            # 自托管二进制，或钉选固定版本并手算 SHA256 后在此显式比对。
-            gunzip -f mihomo.gz && chmod +x mihomo
+            ./mihomo -v || true
+            exit 0
           fi
+          URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VER}/mihomo-linux-amd64-${MIHOMO_VER}.gz"
+          echo "下载 mihomo ${MIHOMO_VER}"
+          curl -fsSL --retry 3 --retry-delay 5 --max-time 300 "$URL" -o mihomo.gz
+          echo "${MIHOMO_SHA256}  mihomo.gz" | sha256sum -c -
+          echo "✅ SHA256 校验通过"
+          gunzip -f mihomo.gz && chmod +x mihomo
           ./mihomo -v || true
 
       - name: Run All Platforms Checkin
