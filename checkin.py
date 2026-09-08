@@ -254,6 +254,41 @@ def diagnose_ikuuu_error(msg):
     return None
 
 # ================= 推送 =================
+# WPush 服务端自 2026-09-09 起会拒绝**非 BMP 字符**（U+FFFF 以上、UTF-8 占 4 字节），
+# 一旦出现在 title/content 里就返回 code=500「服务异常」，且不会有任何提示。
+# 本项目推送正文大量使用 🚀 📊 📶 🖥 🔷 💬 等 emoji，服务端一收紧就全挂，
+# 表现为「签到全部成功但一条推送都收不到」，排查时极易误判成 key 或网络问题。
+#
+# 对策：发送前统一降级成 BMP 符号。下面这张表覆盖 checkin.py 实际用到的 14 个
+# 4 字节字符；表里没有的一律丢弃（宁可少个图标，也不能让整条推送失败）。
+_NON_BMP_MAP = {
+    "🚀": "★", "🎉": "★", "📊": "■", "🖥": "■", "🔷": "◇", "📶": "◆",
+    "🔴": "●", "💬": ">", "💾": "≡", "📋": "≡", "🎁": "*", "💡": "!",
+    "🐞": "!", "👉": "→",
+}
+# 变体选择符（U+FE00–U+FE0F）：基础字符被替换或丢弃后会残留成不可见字符，一并去掉
+_VARIATION_SELECTORS = set(range(0xFE00, 0xFE10))
+
+
+def _to_bmp(text):
+    """把文本中的 4 字节 emoji 降级为 BMP 符号，保证 WPush 不返回 500。"""
+    if not text:
+        return text
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if code <= 0xFFFF:
+            if code in _VARIATION_SELECTORS:
+                continue  # 丢弃变体选择符，避免残留不可见字符
+            out.append(ch)
+            continue
+        rep = _NON_BMP_MAP.get(ch)
+        if rep:
+            out.append(rep)
+        # 表里没有的 4 字节字符：直接丢弃
+    return "".join(out)
+
+
 def wpush(apikey, title, content):
     """发一条 WPush 推送。
 
@@ -267,6 +302,8 @@ def wpush(apikey, title, content):
     """
     if not apikey: return None
 
+    # 关键：必须在发送前降级，否则 4 字节 emoji 会让服务端返回 500 服务异常
+    title, content = _to_bmp(title), _to_bmp(content)
     payload = {"apikey": apikey, "title": title, "content": content, "channel": "wechat"}
     # 在 Actions 上运行时带上跳转链接，点击推送直达本次运行页
     server, repo, run_id = (os.environ.get(k, '') for k in
@@ -290,8 +327,12 @@ def wpush(apikey, title, content):
                 log(f"💬 推送成功（消息ID {body.get('data')}）")
                 return True
             code = body.get("code")
-            # 401 Key 错误 / 422 参数校验 / 429 限流 / 10002 积分不足 ...
+            # 401 Key 错误 / 422 参数校验 / 429 限流 / 500 服务异常 / 10002 积分不足 ...
             log(f"⚠️ 推送失败 code={code}：{body.get('message')}")
+            if code == 500:
+                # 2026-09-09 踩过：文案里混入 4 字节 emoji 会让服务端返回 500。
+                # 发送前已经过 _to_bmp 降级，若仍 500 多半是 WPush 自身故障。
+                log("   （500 多为服务端异常；若刚改过推送文案，确认没有引入 4 字节 emoji）")
             if code == 401 or code == 422:
                 return False  # 配置类错误，重试无用
             if attempt == 1:
