@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import re
+import time
 import traceback
 from datetime import date  # 仅顶层需要 date（W42 Cookie 龄期）；datetime/timedelta 在各函数内局部导入
 
@@ -254,37 +255,61 @@ def diagnose_ikuuu_error(msg):
 
 # ================= 推送 =================
 def wpush(apikey, title, content):
-    if not apikey: return
-    # 实测（2026-09-09）：api.wpush.cn 无论成功失败 HTTP 一律返回 200，
-    # 真正的结果在 JSON body 的 code（0=成功）/ success / message 里。
-    # 所以绝不能拿 status_code 判断成功——那样 key 失效、429 限流、积分不足
-    # 都会被误报成「推送成功」。文档：https://wpush.cn/docs
-    try:
-        payload = {"apikey": apikey, "title": title, "content": content, "channel": "wechat"}
-        # 在 Actions 上运行时带上跳转链接，点击推送直达本次运行页
-        server, repo, run_id = (os.environ.get(k, '') for k in
-                                ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"))
-        if server and repo and run_id:
-            payload["url"] = f"{server}/{repo}/actions/runs/{run_id}"
-        r = requests.post("https://api.wpush.cn/api/v1/send", json=payload,
-            headers={"Content-Type": "application/json"}, timeout=10)
+    """发一条 WPush 推送。
+
+    返回 True=已送达 / False=未送达 / None=未配置 apikey（静默跳过）。
+    调用方必须检查返回值：推送是用户唯一的结果感知渠道，静默失败等于没有告警。
+
+    实测（2026-09-09）：api.wpush.cn 无论成功失败 HTTP 一律返回 200，
+    真正的结果在 JSON body 的 code（0=成功）/ success / message 里。
+    绝不能拿 status_code 判断成功——那样 key 失效、429 限流、积分不足
+    都会被误报成「推送成功」。文档：https://wpush.cn/docs
+    """
+    if not apikey: return None
+
+    payload = {"apikey": apikey, "title": title, "content": content, "channel": "wechat"}
+    # 在 Actions 上运行时带上跳转链接，点击推送直达本次运行页
+    server, repo, run_id = (os.environ.get(k, '') for k in
+                            ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"))
+    if server and repo and run_id:
+        payload["url"] = f"{server}/{repo}/actions/runs/{run_id}"
+
+    # 网络抖动 / 429 限流值得重试一次；401 Key 错误重试无意义
+    for attempt in (1, 2):
         try:
-            body = r.json()
-        except ValueError:
-            log(f"⚠️ 推送返回非 JSON（HTTP {r.status_code}）：{r.text[:120]}")
-            return
-        if body.get("code") == 0 or body.get("success") is True:
-            log(f"💬 推送成功（消息ID {body.get('data')}）")
-        else:
+            r = requests.post("https://api.wpush.cn/api/v1/send", json=payload,
+                headers={"Content-Type": "application/json"}, timeout=10)
+            try:
+                body = r.json()
+            except ValueError:
+                log(f"⚠️ 推送返回非 JSON（HTTP {r.status_code}）：{r.text[:120]}")
+                if attempt == 1:
+                    time.sleep(3); continue
+                return False
+            if body.get("code") == 0 or body.get("success") is True:
+                log(f"💬 推送成功（消息ID {body.get('data')}）")
+                return True
+            code = body.get("code")
             # 401 Key 错误 / 422 参数校验 / 429 限流 / 10002 积分不足 ...
-            log(f"⚠️ 推送失败 code={body.get('code')}：{body.get('message')}")
-    except requests.exceptions.ConnectionError as e:
-        log(f"⚠️ 推送网络不可达（GitHub Actions runner 可能在中国大陆）")
-    except requests.exceptions.Timeout:
-        log(f"⚠️ 推送超时")
-    except Exception as e:
-        log(f"⚠️ 推送异常：{type(e).__name__}: {str(e)[:80]}")
-        log_traceback('wpush')
+            log(f"⚠️ 推送失败 code={code}：{body.get('message')}")
+            if code == 401 or code == 422:
+                return False  # 配置类错误，重试无用
+            if attempt == 1:
+                log("   3 秒后重试一次（可能是限流或网络抖动）")
+                time.sleep(3); continue
+            return False
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            kind = "网络不可达（GitHub Actions runner 可能在中国大陆）" \
+                if isinstance(e, requests.exceptions.ConnectionError) else "超时"
+            log(f"⚠️ 推送{kind}")
+            if attempt == 1:
+                time.sleep(3); continue
+            return False
+        except Exception as e:
+            log(f"⚠️ 推送异常：{type(e).__name__}: {str(e)[:80]}")
+            log_traceback('wpush')
+            return False
+    return False
 
 # ================= GLaDOS =================
 class GLaDOS:
@@ -940,7 +965,14 @@ def main():
     prefix = "⚠️ " if expired else ""
     title = f"{prefix}多平台签到 {total_done}/{total_all}"
 
-    wpush(os.environ.get("WPUSH_APIKEY"), title, body)
+    push_result = wpush(os.environ.get("WPUSH_APIKEY"), title, body)
+    if push_result is False:
+        # 推送是用户唯一的结果感知渠道：签到跑完了但没送达 == 用户完全无感知。
+        # 打出 error 注解让它在 Actions UI 上显形，而不是像之前那样静默过去好几天。
+        log("::error::WPush 推送未送达（签到已执行完毕）。请检查 WPUSH_APIKEY 是否有效、账户积分/免费额度是否充足")
+    elif push_result is None:
+        # 以前这里是完全静默的，Secret 丢了也看不出来
+        log("ℹ️ 未配置 WPUSH_APIKEY，本次不推送")
 
     log("\n" + "=" * 50)
     log("📋 结果：\n" + body)
