@@ -1,4 +1,4 @@
-name: Multi-Platform Checkin (GLaDOS + ikuuu + SMAI + 42w)
+name: 多平台自动签到（GLaDOS + ikuuu + SMAI + 42w）
 
 on:
   schedule:
@@ -39,19 +39,19 @@ jobs:
       REPO_PAT: ${{ secrets.REPO_PAT }}
 
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup Python
+      - name: 安装 Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Dependencies
+      - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: Restore Checkin State
+      - name: 恢复签到状态缓存
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .checkin_state.json
@@ -59,7 +59,7 @@ jobs:
           restore-keys: |
             checkin-state-
 
-      - name: Restore ikuuu Cookie Cache
+      - name: 恢复 ikuuu Cookie 缓存
         # ikuuu-cookie.yml 每 3 天用无头浏览器刷新一次 Cookie 并写回这里。
         # checkin.py 优先使用该文件（而非可能已过期的 IKUUU_COOKIE Secret）。
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -69,7 +69,7 @@ jobs:
           restore-keys: |
             ikuuu-cookie-v1-
 
-      - name: Install mihomo (Clash Meta, 仅 42w 订阅代理需要)
+      - name: 安装 mihomo（仅 42w 订阅代理需要）
         # mihomo 只服务于 W42_SUB 的一条隧道，绝不该拖累 GLaDOS / ikuuu 签到。
         # 三重防护：
         #   ① 未配 W42_SUB 直接跳过，省掉每次几十 MB 下载
@@ -104,12 +104,12 @@ jobs:
           gunzip -f mihomo.gz && chmod +x mihomo
           ./mihomo -v || true
 
-      - name: Run All Platforms Checkin
+      - name: 执行多平台签到
         id: checkin
         run: bash run_checkin.sh
         timeout-minutes: 8
 
-      - name: Check Skip Afternoon
+      - name: 检查下午免签
         id: skip_check
         run: |
           if grep -q "SKIP_AFTERNOON=true" checkin_output.txt; then
@@ -119,7 +119,7 @@ jobs:
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Retry on Failure
+      - name: 失败自动重试
         if: failure()
         run: |
           echo "首次失败，60秒后重试..."
@@ -127,7 +127,7 @@ jobs:
           bash run_checkin.sh
         timeout-minutes: 5
 
-      - name: Upload Debug Logs
+      - name: 上传调试日志
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

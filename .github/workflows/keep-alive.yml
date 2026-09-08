@@ -1,4 +1,4 @@
-name: Keep Repository Active
+name: 仓库保活（每日活跃提交）
 
 # 每天 UTC 0:00 运行一次
 on:
@@ -13,15 +13,15 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (pinned to commit SHA)
 
-      - name: Update timestamp
+      - name: 更新活跃时间戳
         run: |
           # 更新一个时间戳文件来保持仓库活跃
           echo "Last active: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" > .github/last-active.txt
 
-      - name: Commit changes
+      - name: 提交变更
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"

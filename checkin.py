@@ -255,11 +255,29 @@ def diagnose_ikuuu_error(msg):
 # ================= 推送 =================
 def wpush(apikey, title, content):
     if not apikey: return
+    # 实测（2026-09-09）：api.wpush.cn 无论成功失败 HTTP 一律返回 200，
+    # 真正的结果在 JSON body 的 code（0=成功）/ success / message 里。
+    # 所以绝不能拿 status_code 判断成功——那样 key 失效、429 限流、积分不足
+    # 都会被误报成「推送成功」。文档：https://wpush.cn/docs
     try:
-        r = requests.post("https://api.wpush.cn/api/v1/send",
-            json={"apikey": apikey, "title": title, "content": content, "channel": "wechat"},
+        payload = {"apikey": apikey, "title": title, "content": content, "channel": "wechat"}
+        # 在 Actions 上运行时带上跳转链接，点击推送直达本次运行页
+        server, repo, run_id = (os.environ.get(k, '') for k in
+                                ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"))
+        if server and repo and run_id:
+            payload["url"] = f"{server}/{repo}/actions/runs/{run_id}"
+        r = requests.post("https://api.wpush.cn/api/v1/send", json=payload,
             headers={"Content-Type": "application/json"}, timeout=10)
-        log(f"💬 推送成功" if r.status_code == 200 else f"⚠️ 推送返回 {r.status_code}")
+        try:
+            body = r.json()
+        except ValueError:
+            log(f"⚠️ 推送返回非 JSON（HTTP {r.status_code}）：{r.text[:120]}")
+            return
+        if body.get("code") == 0 or body.get("success") is True:
+            log(f"💬 推送成功（消息ID {body.get('data')}）")
+        else:
+            # 401 Key 错误 / 422 参数校验 / 429 限流 / 10002 积分不足 ...
+            log(f"⚠️ 推送失败 code={body.get('code')}：{body.get('message')}")
     except requests.exceptions.ConnectionError as e:
         log(f"⚠️ 推送网络不可达（GitHub Actions runner 可能在中国大陆）")
     except requests.exceptions.Timeout:
