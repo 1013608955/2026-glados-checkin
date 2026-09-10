@@ -234,7 +234,13 @@ EXPIRED_KEYWORDS = {
     'glados': ['unauthorized', 'login', '请重新登录', 'invalid token', '401'],
     'ikuuu': ['密码错误', '用户不存在', '登录失败', 'unauthorized', '401', '403', '405'],
     'smai': ['未登录', '无权', 'unauthorized', '401', 'expired', '过期', '未提供'],
-    'w42': ['未授权', 'unauthorized', '401', '登录失效', 'expired', '过期', '无效'],
+    # w42 除了凭据失效，还有两类高频故障也必须能进告警，否则会「静默全绿」：
+    #   · 403 / cf-ray      → Cloudflare 拦截，多半是代理出口 IP 变了
+    #   · ProxyError / 连接失败 / 超时 / 空响应 → mihomo 隧道没起来或节点已失效
+    # 注意：is_expired() 会把 msg 转小写，关键词一律写小写。
+    'w42': ['未授权', 'unauthorized', '401', '登录失效', 'expired', '过期', '无效',
+            '403', 'cf-ray', 'proxyerror', 'connectionerror', 'connection aborted',
+            'max retries', 'timed out', 'timeout', '空响应', '非json', '被 cloudflare 拦截'],
 }
 
 def is_expired(platform, msg):
@@ -841,6 +847,25 @@ def _w42_unit(ck, uid, fallback, key):
     return msg, ok, [f"• {uname}: {msg}"]
 
 
+def _w42_warn(display):
+    """按失败原因给出可操作的告警文案。
+
+    w42 的失败原因差异极大（Cookie 过期 / CF 拦截 / 代理不通），
+    统一说「Cookie 可能过期」会把排障带到沟里去，所以按 msg 动态判断。
+    """
+    def _warn(msg):
+        m = (msg or '').lower()
+        if 'cf-ray' in m or '403' in m or 'cloudflare' in m:
+            return (f"🔷 42w [{display}] 被 Cloudflare 拦截：出口 IP 很可能已变更，"
+                    f"cf_clearance 与旧 IP 绑定。请用同一出口重抓 W42_COOKIE")
+        if any(k in m for k in ('proxyerror', 'connectionerror', 'connection aborted',
+                                'max retries', 'timed out', 'timeout', '空响应', '非json')):
+            return (f"🔷 42w [{display}] 网络不通：mihomo 隧道未就绪或代理节点已失效，"
+                    f"请检查 W42_SUB / W42_SUB_NODE")
+        return f"🔷 42w [{display}] Cookie 可能过期，请重新抓取"
+    return _warn
+
+
 def _ikuuu_unit(mode, val, display, key):
     """ikuuu 两种登录形态（Cookie 直签 / 账号密码登录）共用同一个执行入口。"""
     log(f"  ikuuu 签到... ({key})")
@@ -1032,7 +1057,7 @@ def main():
             units.append({
                 'key': key,
                 'display': fallback,
-                'warn': f"🔷 42w [{key}] Cookie 可能过期",
+                'warn': _w42_warn(fallback),
                 'skip_lines': [f"• {fallback}: 上午已签，跳过"],
                 'run': lambda ck=ck, uid=uid, fallback=fallback, key=key: _w42_unit(ck, uid, fallback, key),
             })

@@ -68,6 +68,24 @@ def extract_node_block(raw, node_name):
     return None
 
 
+def count_proxies(raw):
+    """统计订阅里 `proxies:` 段的代理条数（用于找不到节点时给排障线索）。
+
+    必须限定在 proxies 段内：proxy-groups 里的条目同样是 `- name: ...` 开头。
+    且不能要求同行含 `server:` —— 多行 YAML 里 server 在后续缩进行，会漏数成 0。
+    """
+    n, in_proxies = 0, False
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        if not line[:1].isspace():          # 顶格键 = 进入/离开某个段落
+            in_proxies = line.strip().startswith("proxies:")
+            continue
+        if in_proxies and line.strip().startswith("-"):
+            n += 1
+    return n
+
+
 def main():
     sub = (os.environ.get("W42_SUB") or "").strip()
     if not sub:
@@ -92,10 +110,14 @@ def main():
         if block:
             print(f"[gen] 已抽取单节点(多行写法, {len(block)} 行定义): {node}")
     if not entry and not block:
+        # 统计订阅里解析到的代理定义数量，给排障一个量级线索。
+        # 刻意不打印节点名清单：订阅内容偏敏感，且节点多时会刷屏。
+        n = count_proxies(raw)
         raise SystemExit(
-            f"[gen] 在订阅中找不到节点 '{node}'。\n"
-            f"      请确认 W42_SUB_NODE 与订阅里的节点名完全一致"
-            f"（区分空格/竖线/大小写），或更新 W42_SUB 链接。"
+            f"[gen] 在订阅中找不到节点 '{node}'（订阅共解析到 {n} 个代理定义）。\n"
+            f"      常见原因：① 该节点已下架或改名；② 订阅换了套餐 / 链接失效；\n"
+            f"      ③ W42_SUB_NODE 与订阅里的节点名不完全一致（区分空格、竖线、大小写）。\n"
+            f"      处理：把 W42_SUB_NODE 改成订阅里仍存在的节点名，或刷新 W42_SUB 链接。"
         )
     proxies_section = f"  {entry}" if entry else "\n".join(block)
     if "server:" not in proxies_section:
