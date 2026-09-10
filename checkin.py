@@ -654,6 +654,38 @@ def smai_one(session, uid_hint='', refresh_token=''):
 
 
 # ================= 42w.shop (New API) =================
+def _probe_exit_ip(proxy, timeout=10):
+    """通过代理探测当前出口 IP。
+
+    为什么需要：42w 的 `cf_clearance` 与抓 Cookie 时的**出口 IP 绑定**，
+    机场节点一旦轮换 IP，签到就会 403，而 Cookie 本身看不出任何异常
+    （这也是 42w 最隐蔽的失效方式）。记录出口 IP 能在「静默 403」发生前
+    就把变化暴露出来。
+
+    探测失败一律返回空串，绝不影响签到主流程。
+    """
+    if not proxy:
+        return ''
+    proxies = {'http': proxy, 'https': proxy}
+    for url in ("https://api.ipify.org?format=json",
+                "https://ifconfig.me/ip",
+                "https://icanhazip.com"):
+        try:
+            s = requests.Session()
+            s.trust_env = False   # 只认显式传入的代理，不被环境代理干扰
+            r = s.get(url, proxies=proxies, timeout=timeout)
+            txt = (r.text or '').strip()
+            if not txt:
+                continue
+            ip = (r.json() or {}).get('ip', '') if txt.startswith('{') \
+                else txt.splitlines()[0].strip()
+            if ip:
+                return ip
+        except Exception:
+            continue
+    return ''
+
+
 def w42_one(cookie, uid_hint=''):
     """单个 42w.shop 账号签到 - 返回 (msg, ok, detail)
 
@@ -963,6 +995,29 @@ def main():
     else:
         results.append("• 未配置，跳过")
         s_success = 0
+
+    # ========== 42w 出口 IP 记录与变更告警 ==========
+    # cf_clearance 与抓 Cookie 时的出口 IP 绑定：节点 IP 一轮换，42w 立刻 403，
+    # 而 Cookie 本身看起来毫无异常。这里把出口 IP 记进 state，一旦变化就提前告警，
+    # 免得等签到失败才发现问题。
+    w42_proxy = (os.environ.get('W42_PROXY') or '').strip()
+    exit_ip = _probe_exit_ip(w42_proxy)
+    if exit_ip:
+        log(f"🌐 42w 出口 IP：{exit_ip}")
+        ip_watch = state.setdefault('w42_exit_ip_watch', {})
+        prev_ip = ip_watch.get('ip', '')
+        today_s = str(get_beijing_time().date())
+        if prev_ip and prev_ip != exit_ip:
+            warn = (f"🔷 42w 出口 IP 已变更（{prev_ip} → {exit_ip}）：cf_clearance 与出口 IP "
+                    f"绑定，42w 可能开始 403，请用同一出口重抓 W42_COOKIE")
+            expired.append(warn)
+            log(f"⚠️ {warn}")
+        if ip_watch.get('ip') != exit_ip:
+            ip_watch['ip'] = exit_ip
+            ip_watch['since'] = today_s
+        ip_watch['last_seen'] = today_s
+    elif w42_proxy:
+        log("⚠️ 42w 出口 IP 探测失败（代理可能未就绪），签到照常继续")
 
     # ========== 42w.shop ==========
     results.append("\n### 🔷 42w.shop 签到结果")
