@@ -457,8 +457,62 @@ def ikuuu_pwd_login(email, pwd):
     return f"所有域名均失败：{last_error}", False
 
 
+# 域名自动发现：ikuuu 会周期性换域名（2026-09-11 那次 .win/.fyi/.cc/.me 集体退役
+# → .top）。退役后的旧域名只剩一个静态「最新域名」公告页，任何 POST 都返回 405。
+# 与其报一个误导性的 405，不如把新域名从公告页里挖出来、自动跟进。
+_IKUUU_EXTRA_DOMAINS = []      # 运行期内发现/恢复的新域名，优先于 IKUUU_DOMAINS
+_IKUUU_DISCOVERED = None       # 本次运行发现的新域名（供 main 持久化到 state）
+_IKUUU_DISCOVERY_DONE = False  # 每次运行只挖一次，防止递归与重复请求
+
+
+def discover_ikuuu_domain(base, timeout=15):
+    """从已退役域名的「最新域名公告页」里挖出新域名，返回 https://host 或 None。
+
+    公告页本体是一个 base64 大串 + atob polyfill，新域名藏在混淆后的 JS 里，
+    形如 `_0x3c0db1[...] = 'ikuuu' + '.top'`。
+    """
+    try:
+        import base64
+        s = requests.Session()
+        s.trust_env = False
+        r = s.get(base.rstrip('/') + '/',
+                  headers={'User-Agent': COMMON_HEADERS['User-Agent'],
+                           'Accept': 'text/html,*/*'},
+                  timeout=timeout, verify=True)
+        if r.status_code != 200:
+            return None
+        raw = r.text or ''
+        # 先看原始 HTML，再把 base64 大串解出来一起找
+        texts = [raw]
+        for m in re.finditer(r'["\']([A-Za-z0-9+/=]{400,})["\']', raw):
+            try:
+                texts.append(base64.b64decode(m.group(1)).decode('utf-8', 'replace'))
+            except Exception:
+                continue
+        cands = []
+        for t in texts:
+            # 形如 'ikuuu' + '.top'
+            for m in re.finditer(r"""['"]ikuuu['"]\s*\+\s*['"](\.[a-z]{2,10})['"]""", t):
+                cands.append('ikuuu' + m.group(1))
+            # 或直接出现完整域名
+            for m in re.finditer(r'\b(ikuuu[a-z0-9-]*\.[a-z]{2,10})\b', t, re.I):
+                cands.append(m.group(1).lower())
+        # 安全底线：只认 ikuuu 品牌域名。公告页若被投毒，也不会把请求引到别处。
+        for c in cands:
+            if c.startswith('ikuuu') and '.' in c:
+                return f"https://{c}"
+        return None
+    except Exception:
+        log_traceback('discover_ikuuu_domain')
+        return None
+
+
 def ikuuu_checkin_cookie(cookie_str):
-    """Cookie 模式签到：直接 POST /user/checkin，多域名容错"""
+    """Cookie 模式签到：直接 POST /user/checkin，多域名容错
+
+    额外能力：命中 405（旧域名退役的特征）时自动去公告页挖新域名并立即重试。
+    """
+    global _IKUUU_DISCOVERY_DONE, _IKUUU_DISCOVERED, _IKUUU_EXTRA_DOMAINS
     h = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -471,7 +525,9 @@ def ikuuu_checkin_cookie(cookie_str):
         'Connection': 'keep-alive',
     }
     
-    for i, domain in enumerate(IKUUU_DOMAINS):
+    # 运行期发现/恢复的新域名排在最前面（旧域名此时多半已经退役）
+    domains = list(_IKUUU_EXTRA_DOMAINS) + list(IKUUU_DOMAINS)
+    for i, domain in enumerate(domains):
         base = domain.rstrip('/')
         h['Origin'] = base
         h['Referer'] = f'{base}/user'
@@ -488,34 +544,50 @@ def ikuuu_checkin_cookie(cookie_str):
                     return msg, ok
                 except Exception as json_err:
                     log(f"  ikuuu @ {domain} 返回非 JSON: {r.text[:100]}")
-                    if i < len(IKUUU_DOMAINS) - 1:
+                    if i < len(domains) - 1:
                         continue
                     return f"非 JSON 响应", False
             elif r.status_code == 403:
-                if i < len(IKUUU_DOMAINS) - 1:
+                if i < len(domains) - 1:
                     log(f"  ⚠️ {domain} 被 Cloudflare 拦截，尝试下一个...")
                     continue
                 return "被 Cloudflare 拦截 (403)", False
             else:
-                if i < len(IKUUU_DOMAINS) - 1:
+                # 405 是旧域名退役的特征（静态公告页对任何 POST 都返回 405）。
+                # 此时刷新 Cookie 毫无意义，先去公告页挖新域名再说。
+                if r.status_code == 405 and not _IKUUU_DISCOVERY_DONE:
+                    _IKUUU_DISCOVERY_DONE = True
+                    new_domain = discover_ikuuu_domain(base)
+                    if new_domain and new_domain.rstrip('/') != base \
+                            and new_domain not in domains:
+                        _IKUUU_DISCOVERED = new_domain
+                        _IKUUU_EXTRA_DOMAINS = [new_domain] + _IKUUU_EXTRA_DOMAINS
+                        log(f"  🔎 {domain} 已退役，从公告页发现新域名：{new_domain}")
+                        log(f"     → 本轮自动改用新域名重试（并会记进 state 供后续运行复用）")
+                        return ikuuu_checkin_cookie(cookie_str)
+                    if new_domain:
+                        log(f"  ⚠️ 公告页指向的新域名 {new_domain} 已在待试列表或不可用")
+                    else:
+                        log(f"  ⚠️ {domain} 返回 405，但未能从公告页挖到新域名")
+                if i < len(domains) - 1:
                     log(f"  ⚠️ {domain} HTTP {r.status_code}, 尝试下一个...")
                     continue
                 return f"HTTP {r.status_code}", False
                 
         except requests.exceptions.SSLError as e:
-            if i < len(IKUUU_DOMAINS) - 1:
+            if i < len(domains) - 1:
                 log(f"  ⚠️ ikuuu {domain} SSL 握手失败，尝试备用域名...")
                 continue
             log(f"  ⚠️ ikuuu Cookie 模式：所有域名 SSL 均失败")
             return "SSL 握手失败（建议使用账号密码模式或本地运行）", False
             
         except requests.exceptions.Timeout:
-            if i < len(IKUUU_DOMAINS) - 1:
+            if i < len(domains) - 1:
                 continue
             return "请求超时", False
             
         except Exception as e:
-            if i < len(IKUUU_DOMAINS) - 1:
+            if i < len(domains) - 1:
                 log(f"  ⚠️ {domain} 异常：{type(e).__name__}: {str(e)[:80]}, 跳过")
                 continue
             log_traceback('ikuuu_checkin_cookie')
@@ -984,6 +1056,10 @@ def main():
         g_success, g_total = 0, 0
 
     # ========== ikuuu ==========
+    # 上次运行若发现过新域名，本次直接沿用，不用每次再去公告页挖
+    ov = state.get('ikuuu_domain_override')
+    if ov:
+        globals()['_IKUUU_EXTRA_DOMAINS'] = [ov] + _IKUUU_EXTRA_DOMAINS
     results.append("\n### 📶 ikuuu 签到结果")
     if ikuuu_accounts:
         units = []
@@ -1001,6 +1077,15 @@ def main():
     else:
         results.append("• 未配置，跳过")
         i_success, i_total = 0, 0
+
+    # 本次发现了新域名：写进 state 让后续运行自动沿用，并明确提示改代码
+    if _IKUUU_DISCOVERED:
+        state['ikuuu_domain_override'] = _IKUUU_DISCOVERED
+        log(f"🔎 ikuuu 新域名 {_IKUUU_DISCOVERED} 已写入 state，后续运行自动沿用")
+        expired.append(
+            f"🔎 ikuuu 已换域名至 {_IKUUU_DISCOVERED}（本次已自动跟进），"
+            f"请尽快把 checkin.py 的 IKUUU_DOMAINS 与 ikuuu_login.py 的 IKUUU_BASE_URL 改成新域名"
+        )
 
     # ========== SMAI ==========
     results.append("\n### ✅ SMAI.AI 签到结果")
