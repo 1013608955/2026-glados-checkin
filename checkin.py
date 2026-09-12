@@ -23,7 +23,12 @@ if sys.platform.startswith('win'):
 
 # ================= 全局配置 =================
 GLADOS_DOMAINS = ["https://glados.cloud", "https://glados.rocks", "https://glados.network"]
-IKUUU_DOMAINS = ["https://ikuuu.win", "https://ikuuu.fyi"]  # .win 为主，.fyi 为备用
+# 2026-09-11 站点换域名：ikuuu.win / ikuuu.fyi / ikuuu.cc / ikuuu.me 全部退役，
+# 现在只剩一个静态的「iKuuuVPN最新域名 2026-09-11」公告页（nginx 纯静态 →
+# 任何 POST 一律 405，GET 一律 200）。新域名只有一个：ikuuu.top。
+# 不要再保留旧域名兜底：它们对 POST 恒返回 405，会被 is_expired 判成
+# 「Cookie 失效」，把人引到错误的排查方向（本次就因此误报了一天）。
+IKUUU_DOMAINS = ["https://ikuuu.top"]
 COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Content-Type': 'application/json;charset=UTF-8',
@@ -250,7 +255,11 @@ def is_expired(platform, msg):
 def diagnose_ikuuu_error(msg):
     """ikuuu 错误智能诊断 - 给用户提供 actionable 的建议"""
     if '405' in msg:
-        return "⚠️ HTTP 405 (方法不允许) — Cookie 可能失效或 API 已变更，建议刷新 Cookie"
+        # 2026-09-11 实战：ikuuu 换域名后，旧域名只剩静态公告页（nginx），
+        # 任何 POST 都返回 405。此时刷新 Cookie 完全没用，必须换域名。
+        return ("⚠️ HTTP 405 (方法不允许) — 站点大概率换域名了：旧域名只剩静态公告页，"
+                "任何 POST 都返回 405。请打开旧域名首页查看最新域名，"
+                "然后更新 checkin.py 的 IKUUU_DOMAINS 与 ikuuu_login.py 的 IKUUU_BASE_URL")
     elif '401' in msg:
         return "⚠️ HTTP 401 (未授权) — Cookie 已过期，请重新获取"
     elif '403' in msg:

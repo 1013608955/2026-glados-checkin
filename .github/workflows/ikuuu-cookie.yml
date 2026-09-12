@@ -40,7 +40,10 @@ jobs:
       IKUUU_EMAIL: ${{ secrets.IKUUU_EMAIL }}
       IKUUU_PASSWORD: ${{ secrets.IKUUU_PASSWORD }}
       IKUUU_TOTP_SECRET: ${{ secrets.IKUUU_TOTP_SECRET }}
-      IKUUU_BASE_URL: ${{ secrets.IKUUU_BASE_URL || 'https://ikuuu.win' }}
+      # 2026-09-11 站点换域名，旧域名已退役（静态公告页，POST 全 405）
+      # 注意：若仓库里设了 IKUUU_BASE_URL Secret 且还是旧值，它会覆盖这里的默认值，
+      #       需要手动把它删掉或改成 https://ikuuu.top
+      IKUUU_BASE_URL: ${{ secrets.IKUUU_BASE_URL || 'https://ikuuu.top' }}
       IKUUU_PROXY: ${{ secrets.IKUUU_PROXY }}
       IKUUU_REMEMBER: "1"
       IKUUU_COOKIE_FILE: ikuuu_cookie.json

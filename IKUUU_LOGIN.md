@@ -2,7 +2,11 @@
 
 ## 目标
 
-让 `ikuuu.win` 的签到不再依赖手动复制 Cookie，实现：
+> **2026-09-11 站点换域名**：`ikuuu.win / .fyi / .cc / .me` 已全部退役，现在只剩一个
+> 静态的「iKuuuVPN最新域名」公告页（nginx 纯静态 → 任何 POST 返回 405、GET 返回 200）。
+> **当前唯一可用域名：`ikuuu.top`**。签到路径与方法未变（仍是 `POST /user/checkin`）。
+
+让 `ikuuu.top` 的签到不再依赖手动复制 Cookie，实现：
 
 - **Phase 1（本地）**：用 Playwright 驱动浏览器完成登录，自动把 Cookie 写入 `ikuuu_cookie.json`。
 - **Phase 2（GitHub Actions）**：定时检查/刷新 Cookie，并把 Cookie 通过 Actions Cache 共享给 `checkin.yml`。
@@ -41,7 +45,7 @@ ikuuu 登录页确实用了 **Geetest V4**，但它选的是 **`captcha_type=ai`
 登录请求是 jQuery form 编码的 `POST /auth/login`：
 
 ```
-host=ikuuu.win
+host=ikuuu.top
 phase=password
 captcha_result[lot_number]=…     ← Geetest v4 四件套，来自打码服务
 captcha_result[captcha_output]=…
@@ -153,7 +157,7 @@ python ikuuu_login.py status
 | `IKUUU_PASSWORD` | ✅ | 登录密码 |
 | `IKUUU_TOTP_SECRET` | 否 | 账号开了 2FA 才需要 |
 | `IKUUU_PROXY` | 否 | runner 出口访问 ikuuu 需要代理时才填 |
-| `IKUUU_BASE_URL` | 否 | 默认 `https://ikuuu.win` |
+| `IKUUU_BASE_URL` | 否 | 默认 `https://ikuuu.top`（2026-09-11 起旧域名已退役） |
 | `IKUUU_COOKIE` | 否 | **仅作兜底**，正常情况下用不到（见「Cookie 传递」） |
 
 ### 2. 工作流职责拆分

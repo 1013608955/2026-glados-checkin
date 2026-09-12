@@ -111,7 +111,9 @@ class Config:
     def __init__(self, env):
         self.email = env.get("IKUUU_EMAIL", "").strip()
         self.password = env.get("IKUUU_PASSWORD", "")
-        self.base_url = env.get("IKUUU_BASE_URL", "https://ikuuu.win").strip().rstrip("/")
+        # 2026-09-11 站点换域名：ikuuu.win/.fyi/.cc/.me 已退役（静态公告页，
+        # POST 全 405），新域名为 ikuuu.top。详见 IKUUU_LOGIN.md。
+        self.base_url = env.get("IKUUU_BASE_URL", "https://ikuuu.top").strip().rstrip("/")
         self.proxy = env.get("IKUUU_PROXY", "").strip()
         self.cookie_file = env.get("IKUUU_COOKIE_FILE", "ikuuu_cookie.json").strip()
         self.headless = _as_bool(env.get("IKUUU_HEADLESS"), default=True)
