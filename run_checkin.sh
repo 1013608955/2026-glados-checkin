@@ -23,7 +23,9 @@ if [ -n "$W42_SUB" ]; then
     echo "mihomo PID=$MH_PID，等待端口 7890 ..."
     READY=0
     for i in $(seq 1 15); do
-      if curl -s -x http://127.0.0.1:7890 https://www.gstatic.com/generate_204 >/dev/null 2>&1; then
+      # 必须带 --max-time：探测请求本身走代理，节点不通时 curl 会一直挂着，
+      # 单次没有上限会把整个流程拖到 80 秒以上。
+      if curl -s --max-time 5 -x http://127.0.0.1:7890 https://www.gstatic.com/generate_204 >/dev/null 2>&1; then
         echo "mihomo 就绪 (端口 7890)"; READY=1; break
       fi
       # 进程已退出（配置有误 / 端口被占）就没必要继续等
@@ -33,13 +35,16 @@ if [ -n "$W42_SUB" ]; then
       fi
       sleep 1
     done
-    if [ "$READY" -eq 0 ]; then
-      echo "⚠️ mihomo 未就绪：42w 将指向一个不通的代理端口（大概率失败），其余平台照常"
+    if [ "$READY" -eq 1 ]; then
+      export W42_PROXY=http://127.0.0.1:7890
+    else
+      # 未就绪时绝不导出 W42_PROXY：否则 42w 会对着一个死端口发请求，
+      # 换来一个莫名其妙的 SSLError，反而掩盖了「代理根本没起来」这个事实。
+      echo "⚠️ mihomo 未就绪：42w 本次将直连（大概率被 Cloudflare 拦截），其余平台照常"
       echo "--- mihomo.log 尾部 ---"
       tail -20 mihomo.log 2>/dev/null || true
       echo "--- end ---"
     fi
-    export W42_PROXY=http://127.0.0.1:7890
   fi
 fi
 
