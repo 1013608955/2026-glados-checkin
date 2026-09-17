@@ -1127,10 +1127,10 @@ def main():
         prev_ip = ip_watch.get('ip', '')
         today_s = str(get_beijing_time().date())
         if prev_ip and prev_ip != exit_ip:
-            warn = (f"🔷 42w 出口 IP 已变更（{prev_ip} → {exit_ip}）：cf_clearance 与出口 IP "
-                    f"绑定，42w 可能开始 403，请用同一出口重抓 W42_COOKIE")
-            expired.append(warn)
-            log(f"⚠️ {warn}")
+            # 只记日志、不打进告警：换用 GLaDOS 这类多出口节点后，每次拉到的
+            # 出口 IP 本来就会变，而 42w 依然签到成功 —— 升级成告警只会变成噪音。
+            # 真正因 IP 失配导致的失败，会以 Cloudflare 403 的形式单独告警。
+            log(f"ℹ️ 42w 出口 IP 变化：{prev_ip} → {exit_ip}（多出口节点属正常，仅供参考）")
         if ip_watch.get('ip') != exit_ip:
             ip_watch['ip'] = exit_ip
             ip_watch['since'] = today_s
