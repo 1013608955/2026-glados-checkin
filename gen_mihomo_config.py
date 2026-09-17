@@ -128,6 +128,65 @@ def extract_node_block(raw, node_name):
     return None
 
 
+def extract_node_item(raw, node_name):
+    """第三种写法兜底：`name:` 不在项首行时，定位包含它的整个列表项。
+
+    FlClash 导出的配置里代理项长这样（name 夹在中间，且以 `- alpn:` 开头）：
+        - alpn:
+            - "h2"
+          client-fingerprint: "chrome"
+          name: "glados-TLS-L1-2"
+          server: "4df8a01.pi.gladns.net"
+    按「- name:」定位的前两种写法都匹配不到，因此这里改为：
+    先找到 name 行，再向上回溯到本项起点（缩进更小且以 '-' 开头的那一行），
+    向下收齐直到同级的下一个 '-' 项。
+    """
+    lines = raw.splitlines()
+    pat = re.compile(r"name:\s*['\"]?" + re.escape(node_name) + r"['\"]?\s*$")
+    for i, line in enumerate(lines):
+        if not pat.search(line.strip()):
+            continue
+        name_indent = len(line) - len(line.lstrip())
+        start = None
+        for j in range(i - 1, -1, -1):
+            s = lines[j]
+            if not s.strip():
+                continue
+            ind = len(s) - len(s.lstrip())
+            if ind < name_indent and s.strip().startswith("-"):
+                start = j
+                break
+        if start is None:
+            continue
+        item_indent = len(lines[start]) - len(lines[start].lstrip())
+        block = [lines[start]]
+        for k in range(start + 1, len(lines)):
+            s = lines[k]
+            if not s.strip():
+                break
+            ind = len(s) - len(s.lstrip())
+            if ind <= item_indent and s.strip().startswith("-"):
+                break
+            block.append(s)
+        if any("server:" in b for b in block):
+            return block
+    return None
+
+
+def extract_any(raw, node_name):
+    """依次尝试三种写法，返回 (entry, block)。"""
+    e = extract_node(raw, node_name)
+    if e:
+        return e, None
+    b = extract_node_block(raw, node_name)
+    if b:
+        return None, b
+    b = extract_node_item(raw, node_name)
+    if b:
+        return None, b
+    return None, None
+
+
 def count_proxies(raw):
     """统计订阅里 `proxies:` 段的代理条数（用于找不到节点时给排障线索）。
 
@@ -191,6 +250,14 @@ def main():
         if "server:" not in preset:
             raise SystemExit("[gen] W42_NODE_YAML 缺少 server: 字段，配置无效")
         print(f"[gen] 使用本机同步的节点配置（跳过订阅下载，{len(preset)} 字符）")
+        # 节点名以配置本身为准：proxy-groups 必须引用真实存在的代理名，
+        # 若 W42_SUB_NODE 与同步下来的节点不同步，生成出来的配置会引用不到节点。
+        m = re.search(r"""name:\s*['"]?([^'"\n,}]+?)['"]?\s*$""", preset, re.M)
+        if m:
+            preset_name = m.group(1).strip()
+            if preset_name and preset_name != node:
+                print(f"[gen] 节点名以配置为准：W42_SUB_NODE='{node}' → 实际用 '{preset_name}'")
+                node = preset_name
         if preset.lstrip().startswith("-"):
             _write_config(node, preset, None)
         else:
@@ -207,11 +274,7 @@ def main():
         host = sub.split('/')[0]
     print(f"[gen] 下载订阅: {host} （已脱敏，不打印完整链接以避免泄露订阅 token）")
     def _parse(text):
-        e = extract_node(text, node)
-        b = None
-        if not e:
-            b = extract_node_block(text, node)
-        return e, b
+        return extract_any(text, node)
 
     def _report(raw_text, headers, status):
         print(f"[gen] 订阅大小: {len(raw_text)} 字符  HTTP {status}")
