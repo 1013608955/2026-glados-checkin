@@ -36,6 +36,10 @@ jobs:
       W42_PROXY: ${{ secrets.W42_PROXY }}
       W42_SUB: ${{ secrets.W42_SUB }}
       W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
+      # 兜底通道：本机同步上来的单节点配置（w42_sync_node.py 写入）。
+      # 机场订阅常对机房 IP 返回 403 或空节点列表，此时 gen_mihomo_config.py
+      # 直接用这份配置，不再下载订阅。有值时优先于 W42_SUB。
+      W42_NODE_YAML: ${{ secrets.W42_NODE_YAML }}
       REPO_PAT: ${{ secrets.REPO_PAT }}
 
     steps:

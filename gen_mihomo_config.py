@@ -145,12 +145,53 @@ def count_proxies(raw):
     return n
 
 
+def _write_config(node, entry, block):
+    """把抽取到的单个节点写成 mihomo 配置（单节点隧道 + MATCH 全走 w42）。"""
+    proxies_section = f"  {entry}" if entry else "\n".join(block)
+    if "server:" not in proxies_section:
+        raise SystemExit("[gen] 抽取结果缺少 server: 字段，生成的配置无效，终止")
+
+    cfg = f"""# 由 gen_mihomo_config.py 自动生成（单节点：{node}）
+mixed-port: 7890
+mode: rule
+allow-lan: false
+log-level: info
+external-controller: 127.0.0.1:9090
+proxies:
+{proxies_section}
+proxy-groups:
+  - name: w42
+    type: select
+    proxies:
+      - {node}
+rules:
+  - MATCH,w42
+"""
+    with open("mihomo_config.yaml", "w", encoding="utf-8") as f:
+        f.write(cfg)
+    print("[gen] 已生成 mihomo_config.yaml（单节点隧道，无需探测）")
+
+
 def main():
+    node = (os.environ.get("W42_SUB_NODE") or "").strip() or DEFAULT_NODE
+
+    # ★ 兜底通道（优先）：本机同步上来的单节点配置，见 w42_sync_node.py。
+    #   机场订阅常对机房 IP 限流 / 拒绝（403、或 200 但 0 节点），
+    #   但本机可以正常拉取。由本机抽好节点写进 Secret，CI 直接用，不再下载订阅。
+    preset = (os.environ.get("W42_NODE_YAML") or "").strip()
+    if preset:
+        if "server:" not in preset:
+            raise SystemExit("[gen] W42_NODE_YAML 缺少 server: 字段，配置无效")
+        print(f"[gen] 使用本机同步的节点配置（跳过订阅下载，{len(preset)} 字符）")
+        if preset.lstrip().startswith("-"):
+            _write_config(node, preset, None)
+        else:
+            _write_config(node, None, preset.splitlines())
+        return
+
     sub = (os.environ.get("W42_SUB") or "").strip()
     if not sub:
-        raise SystemExit("W42_SUB 未设置，无法生成 mihomo 配置")
-
-    node = (os.environ.get("W42_SUB_NODE") or "").strip() or DEFAULT_NODE
+        raise SystemExit("W42_SUB 未设置，且没有 W42_NODE_YAML 兜底，无法生成 mihomo 配置")
     try:
         from urllib.parse import urlparse
         host = urlparse(sub).netloc or sub.split('/')[0]
@@ -231,31 +272,9 @@ def main():
             f"[gen] 在订阅中找不到节点 '{node}'（订阅共解析到 {n} 个代理定义，账户正常）。\n"
             f"      常见原因：① 该节点已下架或改名；② W42_SUB_NODE 与订阅里的节点名\n"
             f"      不完全一致（区分空格、竖线、大小写）。\n"
-            f"      处理：把 W42_SUB_NODE 改成订阅里仍存在的节点名。"
+            f"                处理：把 W42_SUB_NODE 改成订阅里仍存在的节点名。"
         )
-    proxies_section = f"  {entry}" if entry else "\n".join(block)
-    if "server:" not in proxies_section:
-        raise SystemExit("[gen] 抽取结果缺少 server: 字段，生成的配置无效，终止")
-
-    cfg = f"""# 由 gen_mihomo_config.py 自动生成（单节点：{node}）
-mixed-port: 7890
-mode: rule
-allow-lan: false
-log-level: info
-external-controller: 127.0.0.1:9090
-proxies:
-{proxies_section}
-proxy-groups:
-  - name: w42
-    type: select
-    proxies:
-      - {node}
-rules:
-  - MATCH,w42
-"""
-    with open("mihomo_config.yaml", "w", encoding="utf-8") as f:
-        f.write(cfg)
-    print("[gen] 已生成 mihomo_config.yaml（单节点隧道，无需探测）")
+    _write_config(node, entry, block)
 
 
 if __name__ == "__main__":
