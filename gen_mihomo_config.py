@@ -14,6 +14,7 @@ CF 直接重挑战 403。因此不探测、不列节点，直接把那一个节�
 """
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -175,10 +176,17 @@ rules:
 def main():
     node = (os.environ.get("W42_SUB_NODE") or "").strip() or DEFAULT_NODE
 
-    # ★ 兜底通道（优先）：本机同步上来的单节点配置，见 w42_sync_node.py。
-    #   机场订阅常对机房 IP 限流 / 拒绝（403、或 200 但 0 节点），
-    #   但本机可以正常拉取。由本机抽好节点写进 Secret，CI 直接用，不再下载订阅。
-    preset = (os.environ.get("W42_NODE_YAML") or "").strip()
+    # ★ 兜底通道（默认优先）：本机同步上来的单节点配置，见 w42_sync_node.py。
+    #
+    # 为什么默认不拉订阅：机场明确限流——「短时间内超出限制，或检测到订阅被分享，
+    # 会自动重置订阅凭证」，旧链接随即失效。CI 每天拉两次属于不必要的消耗，
+    # 真正的更新通道是本机的 w42_sync_node.py（频率可控、IP 是你自己的）。
+    # 因此只有在「同步的节点连不上」时，才由 run_checkin.sh 带
+    # --force-subscription 回来拉一次订阅，这就是我们唯一主动拉订阅的时机。
+    force_sub = "--force-subscription" in sys.argv
+    preset = "" if force_sub else (os.environ.get("W42_NODE_YAML") or "").strip()
+    if force_sub:
+        print("[gen] --force-subscription：忽略本机同步的节点，改为重新拉取订阅")
     if preset:
         if "server:" not in preset:
             raise SystemExit("[gen] W42_NODE_YAML 缺少 server: 字段，配置无效")

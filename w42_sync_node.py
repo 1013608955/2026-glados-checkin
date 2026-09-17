@@ -32,6 +32,9 @@ import sys
 import gen_mihomo_config as g
 
 SECRET_NAME = "W42_NODE_YAML"
+# 本机缓存多久算「新鲜」：Clash Verge 默认每天更新一次订阅，
+# 3 天内的缓存足够可信，直接用就不必再拉订阅了。
+CACHE_MAX_AGE_DAYS = 3
 DEFAULT_CV_DIR = os.path.join(
     os.environ.get("APPDATA", r"C:\Users\Admin\AppData\Roaming"),
     "io.github.clash-verge-rev.clash-verge-rev",
@@ -111,6 +114,8 @@ def main():
     ap.add_argument("--sub", default="", help="订阅链接（默认取 W42_SUB 或 Clash Verge 配置）")
     ap.add_argument("--node", default="", help="节点名（默认取 W42_SUB_NODE 或内置默认值）")
     ap.add_argument("--dry-run", action="store_true", help="只显示抽取结果，不写 Secret")
+    ap.add_argument("--online", action="store_true",
+                    help="强制在线拉订阅（默认优先用本机 Clash Verge 缓存，避免拉取过频）")
     args = ap.parse_args()
 
     node = (args.node or os.environ.get("W42_SUB_NODE") or "").strip() or g.DEFAULT_NODE
@@ -128,8 +133,13 @@ def main():
     print(f"  目标主机：{host}（订阅 token 不打印）")
     print(f"  目标节点：{node}")
 
-    text = None
-    try:
+    import time as _t
+
+    cv_dir = os.environ.get("W42_CV_DIR") or DEFAULT_CV_DIR
+    cached, src, mt = extract_from_local_profiles(cv_dir, node)
+    cache_fresh = bool(cached) and (_t.time() - mt) < CACHE_MAX_AGE_DAYS * 86400
+
+    def from_online():
         raw, headers, status = fetch(sub)
         ui_txt, problems = g.parse_userinfo(headers)
         if ui_txt:
@@ -137,27 +147,35 @@ def main():
         for p in problems:
             print(f"  ⚠️ {p}")
         print(f"  订阅节点数：{g.count_proxies(raw)}")
-        entry = g.extract_node(raw, node)
-        block = None
-        if not entry:
-            block = g.extract_node_block(raw, node)
-        if entry or block:
-            text = entry if entry else "\n".join(block)
-    except SystemExit as e:
-        print(f"  ⚠️ 在线获取不可用：{str(e).splitlines()[0]}")
+        e = g.extract_node(raw, node)
+        b = None
+        if not e:
+            b = g.extract_node_block(raw, node)
+        return (e or "\n".join(b)) if (e or b) else None
 
+    def from_cache(allow_stale=False):
+        if not cached or (not allow_stale and not cache_fresh):
+            return None
+        age = (_t.time() - mt) / 86400
+        print(f"  使用本机 Clash Verge 缓存：{os.path.basename(src)} "
+              f"（更新于 {_t.strftime('%Y-%m-%d %H:%M', _t.localtime(mt))}，{age:.1f} 天前）")
+        return cached
+
+    # 默认优先用本地缓存：Clash Verge 自己就会定期更新它，
+    # 没必要为了同步一个节点再去拉一次订阅（机场会因拉取过频重置凭证）。
+    text = None
+    if not args.online:
+        text = from_cache()
     if not text:
-        # 在线拿不到（限流 / 拒绝）→ 退回 Clash Verge 的本地缓存
-        cv_dir = os.environ.get("W42_CV_DIR") or DEFAULT_CV_DIR
-        cached, src, mt = extract_from_local_profiles(cv_dir, node)
-        if cached:
-            import time as _t
-            print(f"  改用本机 Clash Verge 缓存：{os.path.basename(src)} "
-                  f"（更新于 {_t.strftime('%Y-%m-%d %H:%M', _t.localtime(mt))}）")
-            text = cached
-        else:
-            raise SystemExit(f"在线与本机缓存都找不到节点 '{node}'。\n"
-                             f"  确认节点名是否正确，或先让 Clash Verge 更新一次订阅。")
+        try:
+            text = from_online()
+        except SystemExit as e:
+            print(f"  ⚠️ 在线获取不可用：{str(e).splitlines()[0]}")
+    if not text:
+        text = from_cache(allow_stale=True)
+    if not text:
+        raise SystemExit(f"在线与本机缓存都找不到节点 '{node}'。\n"
+                         f"  确认节点名是否正确，或先让 Clash Verge 更新一次订阅。")
     if "server:" not in text:
         raise SystemExit("抽取结果缺少 server: 字段，终止")
 
