@@ -14,6 +14,7 @@ CF 直接重挑战 403。因此不探测、不列节点，直接把那一个节�
 """
 import os
 import re
+import time
 import urllib.request
 
 # 当初抓 Cookie 用的节点（出口 IP 与 cf_clearance 对齐）；可用 W42_SUB_NODE 覆盖
@@ -21,12 +22,61 @@ DEFAULT_NODE = "新加坡高速 05| CTCM"
 
 
 def fetch_subscription(sub):
+    """返回 (订阅正文, 响应头 dict)。
+
+    响应头里的 `subscription-userinfo` 带套餐用量与到期时间，是判断
+    「账号问题」还是「本次返回为空」的关键依据，所以一并返回。
+    """
     req = urllib.request.Request(
         sub,
         headers={"User-Agent": "clash-verge/1.10.0", "Accept": "*/*"},
     )
     with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", errors="replace")
+        return r.read().decode("utf-8", errors="replace"), dict(r.headers)
+
+
+def parse_userinfo(headers):
+    """解析 subscription-userinfo，返回 (可读文本, 问题列表)。
+
+    机场普遍按 Clash 约定回传这个头：upload/download/total/expire。
+    有了它就不用靠猜：账号过期 / 流量用尽 / 只是这次没给节点，一眼可分。
+    """
+    ui = ""
+    for k, v in (headers or {}).items():
+        if k.lower() == "subscription-userinfo":
+            ui = v or ""
+            break
+    if not ui:
+        return "", []
+
+    d = {}
+    for kv in ui.split(";"):
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            d[k.strip().lower()] = v.strip()
+
+    def gb(x):
+        try:
+            return f"{int(x) / 1024 ** 3:.2f}GB"
+        except Exception:
+            return str(x)
+
+    problems = []
+    exp = d.get("expire", "")
+    exp_txt = "未知"
+    if exp.isdigit():
+        exp_i = int(exp)
+        exp_txt = time.strftime("%Y-%m-%d", time.localtime(exp_i))
+        if exp_i < time.time():
+            problems.append("套餐已过期")
+    total = int(d.get("total", "0") or 0)
+    download = int(d.get("download", "0") or 0)
+    if total and download >= total:
+        problems.append("流量已用尽")
+
+    txt = (f"流量 {gb(d.get('upload', '0'))}↑ / {gb(d.get('download', '0'))}↓ "
+           f"共 {gb(d.get('total', '0'))}，到期 {exp_txt}")
+    return txt, problems
 
 
 def extract_node(raw, node_name):
@@ -98,26 +148,63 @@ def main():
     except Exception:
         host = sub.split('/')[0]
     print(f"[gen] 下载订阅: {host} （已脱敏，不打印完整链接以避免泄露订阅 token）")
-    raw = fetch_subscription(sub)
-    print(f"[gen] 订阅大小: {len(raw)} 字符")
+    def _parse(text):
+        e = extract_node(text, node)
+        b = None
+        if not e:
+            b = extract_node_block(text, node)
+        return e, b
 
-    entry = extract_node(raw, node)
-    block = None
+    def _report(raw_text, headers):
+        print(f"[gen] 订阅大小: {len(raw_text)} 字符")
+        ui_txt, problems = parse_userinfo(headers)
+        if ui_txt:
+            print(f"[gen] 订阅账户: {ui_txt}")
+        for p in problems:
+            print(f"[gen] ⚠️ 订阅账户问题：{p}")
+        return ui_txt
+
+    raw, headers = fetch_subscription(sub)
+    ui_txt = _report(raw, headers)
+
+    entry, block = _parse(raw)
+    if not entry and not block and count_proxies(raw) == 0:
+        # 一个节点都没有 ≠ 节点名写错。机场常因限流或按来源 IP 过滤返回空列表，
+        # 重试一次再定性，避免把「机场没给节点」误报成「节点名不对」。
+        print("[gen] 本次订阅返回 0 个节点，8 秒后重试一次（可能是限流或按来源 IP 过滤）")
+        time.sleep(8)
+        try:
+            raw2, headers2 = fetch_subscription(sub)
+            if raw2:
+                raw, headers = raw2, headers2
+                print("[gen] 重试结果：")
+                ui_txt = _report(raw, headers)
+                entry, block = _parse(raw)
+        except Exception as e:
+            print(f"[gen] 重试失败：{type(e).__name__}: {e}")
+
     if entry:
         print(f"[gen] 已抽取单节点(单行写法): {node}")
+    elif block:
+        print(f"[gen] 已抽取单节点(多行写法, {len(block)} 行定义): {node}")
     else:
-        block = extract_node_block(raw, node)
-        if block:
-            print(f"[gen] 已抽取单节点(多行写法, {len(block)} 行定义): {node}")
-    if not entry and not block:
         # 统计订阅里解析到的代理定义数量，给排障一个量级线索。
         # 刻意不打印节点名清单：订阅内容偏敏感，且节点多时会刷屏。
         n = count_proxies(raw)
+        if n == 0:
+            raise SystemExit(
+                f"[gen] 订阅本次返回 0 个代理定义 —— 这不是节点名的问题。\n"
+                f"      订阅账户：{ui_txt or '响应头未提供 subscription-userinfo'}\n"
+                f"      常见原因：① 机场限流（通常稍后自动恢复）；\n"
+                f"      ② 按来源 IP 过滤节点（GitHub Actions 是机房 IP，部分机场不给节点）；\n"
+                f"      ③ 订阅链接失效。\n"
+                f"      处理：先手动 Run 一次确认是否瞬时限流；若持续为空，需要更换订阅或出口。"
+            )
         raise SystemExit(
-            f"[gen] 在订阅中找不到节点 '{node}'（订阅共解析到 {n} 个代理定义）。\n"
-            f"      常见原因：① 该节点已下架或改名；② 订阅换了套餐 / 链接失效；\n"
-            f"      ③ W42_SUB_NODE 与订阅里的节点名不完全一致（区分空格、竖线、大小写）。\n"
-            f"      处理：把 W42_SUB_NODE 改成订阅里仍存在的节点名，或刷新 W42_SUB 链接。"
+            f"[gen] 在订阅中找不到节点 '{node}'（订阅共解析到 {n} 个代理定义，账户正常）。\n"
+            f"      常见原因：① 该节点已下架或改名；② W42_SUB_NODE 与订阅里的节点名\n"
+            f"      不完全一致（区分空格、竖线、大小写）。\n"
+            f"      处理：把 W42_SUB_NODE 改成订阅里仍存在的节点名。"
         )
     proxies_section = f"  {entry}" if entry else "\n".join(block)
     if "server:" not in proxies_section:
