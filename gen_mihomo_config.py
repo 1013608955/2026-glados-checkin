@@ -15,6 +15,7 @@ CF 直接重挑战 403。因此不探测、不列节点，直接把那一个节�
 import os
 import re
 import time
+import urllib.error
 import urllib.request
 
 # 当初抓 Cookie 用的节点（出口 IP 与 cf_clearance 对齐）；可用 W42_SUB_NODE 覆盖
@@ -22,17 +23,25 @@ DEFAULT_NODE = "新加坡高速 05| CTCM"
 
 
 def fetch_subscription(sub):
-    """返回 (订阅正文, 响应头 dict)。
+    """返回 (订阅正文, 响应头 dict, HTTP 状态码)。
 
-    响应头里的 `subscription-userinfo` 带套餐用量与到期时间，是判断
-    「账号问题」还是「本次返回为空」的关键依据，所以一并返回。
+    机场侧 403 / 429 很常见（限流或按来源 IP 拒绝），这里**不抛异常**，
+    而是把状态码带回给 main 统一决定是否重试 —— 否则会抛出一串裸 traceback，
+    连订阅账户信息都来不及打印。
     """
     req = urllib.request.Request(
         sub,
         headers={"User-Agent": "clash-verge/1.10.0", "Accept": "*/*"},
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", errors="replace"), dict(r.headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read().decode("utf-8", errors="replace"), dict(r.headers), r.status
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        return body, dict(e.headers or {}), e.code
 
 
 def parse_userinfo(headers):
@@ -155,8 +164,8 @@ def main():
             b = extract_node_block(text, node)
         return e, b
 
-    def _report(raw_text, headers):
-        print(f"[gen] 订阅大小: {len(raw_text)} 字符")
+    def _report(raw_text, headers, status):
+        print(f"[gen] 订阅大小: {len(raw_text)} 字符  HTTP {status}")
         ui_txt, problems = parse_userinfo(headers)
         if ui_txt:
             print(f"[gen] 订阅账户: {ui_txt}")
@@ -164,24 +173,42 @@ def main():
             print(f"[gen] ⚠️ 订阅账户问题：{p}")
         return ui_txt
 
-    raw, headers = fetch_subscription(sub)
-    ui_txt = _report(raw, headers)
-
+    raw, headers, status = fetch_subscription(sub)
+    ui_txt = _report(raw, headers, status)
     entry, block = _parse(raw)
-    if not entry and not block and count_proxies(raw) == 0:
-        # 一个节点都没有 ≠ 节点名写错。机场常因限流或按来源 IP 过滤返回空列表，
-        # 重试一次再定性，避免把「机场没给节点」误报成「节点名不对」。
-        print("[gen] 本次订阅返回 0 个节点，8 秒后重试一次（可能是限流或按来源 IP 过滤）")
-        time.sleep(8)
+
+    # 两种情况都值得先重试一次再定性，避免把「机场没给节点 / 拒绝请求」
+    # 误报成「节点名写错了」：
+    #   ① HTTP 非 200（403/429 = 限流或按来源 IP 拒绝）
+    #   ② 200 但 0 个节点（机场针对来源 IP 过滤了节点列表）
+    need_retry, reason = False, ""
+    if status != 200:
+        need_retry = True
+        reason = f"订阅返回 HTTP {status}（403/429 通常是限流或来源 IP 被拒）"
+    elif not entry and not block and count_proxies(raw) == 0:
+        need_retry = True
+        reason = "本次订阅返回 0 个节点（可能按来源 IP 过滤）"
+
+    if need_retry:
+        print(f"[gen] {reason}，10 秒后重试一次")
+        time.sleep(10)
         try:
-            raw2, headers2 = fetch_subscription(sub)
-            if raw2:
-                raw, headers = raw2, headers2
-                print("[gen] 重试结果：")
-                ui_txt = _report(raw, headers)
+            raw, headers, status = fetch_subscription(sub)
+            print("[gen] 重试结果：")
+            ui_txt = _report(raw, headers, status)
+            if status == 200:
                 entry, block = _parse(raw)
         except Exception as e:
             print(f"[gen] 重试失败：{type(e).__name__}: {e}")
+
+    if status != 200:
+        raise SystemExit(
+            f"[gen] 无法获取订阅：HTTP {status}。\n"
+            f"      订阅账户：{ui_txt or '响应头未提供 subscription-userinfo'}\n"
+            f"      常见原因：① 机场限流（403/429，稍后可能自动恢复）；\n"
+            f"      ② 按来源 IP 拒绝（GitHub Actions 是机房 IP）；③ 订阅链接失效。\n"
+            f"      处理：确认订阅链接是否仍有效；若持续被拒，需要更换订阅或出口。"
+        )
 
     if entry:
         print(f"[gen] 已抽取单节点(单行写法): {node}")
