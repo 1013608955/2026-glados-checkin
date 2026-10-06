@@ -28,7 +28,9 @@ start_stack() {
   nohup ./mihomo -f mihomo_config.yaml > mihomo.log 2>&1 &
   MH_PID=$!
   echo "mihomo PID=$MH_PID，等待端口 7890 ..."
-  for i in $(seq 1 15); do
+  # 等 40 秒：实测 GLaDOS 节点偶发需要 17 秒以上才通（2026-10-06 两次连续运行，
+  # 第一次 2 秒就绪、第二次 17 秒仍未通）。签到步骤总预算 4 分钟，等得起。
+  for i in $(seq 1 40); do
     # 必须带 --max-time：探测本身走代理，节点不通时 curl 会一直挂着，
     # 单次无上限会把整轮拖到 80 秒以上。
     if curl -s --max-time 5 -x http://127.0.0.1:7890 https://www.gstatic.com/generate_204 >/dev/null 2>&1; then
