@@ -10,6 +10,12 @@
 # 若未设 W42_SUB 且无 W42_NODE_YAML：直接跑 checkin.py（42w 直连，多半失败）。
 set +e
 
+# 阶段时间戳：2026-10-05 那次 job 卡了 15 分钟被 cancelled，而 GitHub
+# **不给 cancelled 的 job 留日志**，导致完全无法定位。带上时间戳后，
+# 即便只拿到部分日志，也能一眼看出停在哪一步、卡了多久。
+stamp() { date -u '+%H:%M:%S'; }
+echo "[$(stamp)] ---- run_checkin.sh 开始 ----"
+
 MH_PID=""
 
 # 启动 mihomo 并等待就绪。$1 额外传给 gen_mihomo_config.py 的参数（可为空）。
@@ -81,6 +87,9 @@ if [ -n "$W42_SUB" ] || [ -n "$W42_NODE_YAML" ]; then
   fi
 fi
 
+echo "[$(stamp)] ---- 开始 checkin.py ----"
 python checkin.py 2>&1 | tee checkin_output.txt
+echo "[$(stamp)] ---- checkin.py 结束（退出码 ${PIPESTATUS[0]:-?}）----"
 
 kill_mihomo && echo "=== 已停止 mihomo ==="
+echo "[$(stamp)] ---- run_checkin.sh 结束 ----"
