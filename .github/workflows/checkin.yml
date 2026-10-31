@@ -37,6 +37,9 @@ jobs:
       SMAI_REFRESH: ${{ secrets.SMAI_REFRESH }}
       W42_COOKIE: ${{ secrets.W42_COOKIE }}
       W42_UID: ${{ secrets.W42_UID }}
+      # 42x 迁移后新增：new_api_refresh Cookie，用 /api/user/auth/refresh 现换 access_token。
+      # 每次刷新会轮换，新值由 checkin.py 写进 .checkin_state.json（随缓存跨运行传递）。
+      W42_REFRESH: ${{ secrets.W42_REFRESH }}
       W42_PROXY: ${{ secrets.W42_PROXY }}
       W42_SUB: ${{ secrets.W42_SUB }}
       W42_SUB_NODE: ${{ secrets.W42_SUB_NODE }}
