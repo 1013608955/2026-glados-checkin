@@ -35,7 +35,7 @@ COMMON_HEADERS = {
     'Accept': 'application/json, text/plain, */*',
 }
 SMAI_API = "https://api.smai.ai"
-W42_API = "https://api.42w.shop"
+W42_API = "https://api.42x.shop"   # 2026-10 站点迁移：42w.shop -> 42x.shop（同一套 New API 后端）
 STATE_FILE = os.environ.get("CHECKIN_STATE_FILE", ".checkin_state.json")
 
 # ================= 工具函数 =================
@@ -178,6 +178,24 @@ def get_w42_uids():
     if not raw: return []
     return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
 
+def get_w42_refresh(state=None):
+    """取 42x 的长期刷新令牌（浏览器 `new_api_refresh` cookie 的值）。
+
+    优先级：state 里上一轮轮换下来的新 token > W42_REFRESH Secret。
+    为什么必须走 state：`/api/user/auth/refresh` 每调用一次就【轮换】
+    new_api_refresh（旧值立刻失效），而仓库没配 PAT、CI 无法回写 Secret；
+    `.checkin_state.json` 本身由 Actions Cache 跨运行持久化，新 token
+    存进去就能自然接续。
+    """
+    raw = ''
+    if isinstance(state, dict):
+        raw = str(state.get('w42_refresh') or '').strip()
+    if not raw:
+        raw = os.environ.get('W42_REFRESH', '').strip()
+    if raw.startswith('new_api_refresh='):
+        raw = raw[len('new_api_refresh='):].strip()
+    return raw
+
 # ================= 状态管理 =================
 def load_state():
     legacy_watch = {}
@@ -185,10 +203,14 @@ def load_state():
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-                # 跨天数据：W42 Cookie 龄期监控需跨天保留；每日签到记录按天重置
+                # 跨天数据：W42 Cookie 龄期监控 + 42x 轮换后的 refresh token 必须
+                # 跨天保留；每日签到记录按天重置
                 w = state.get('w42_cookie_watch')
                 if isinstance(w, dict):
-                    legacy_watch = {'w42_cookie_watch': w}
+                    legacy_watch['w42_cookie_watch'] = w
+                r = state.get('w42_refresh')
+                if isinstance(r, str) and r:
+                    legacy_watch['w42_refresh'] = r
                 # 用北京时间判断日期
                 beijing_date = get_beijing_time().date()
                 if state.get('date') == str(beijing_date):
@@ -199,7 +221,7 @@ def load_state():
                     return state
     except Exception:
         log_traceback('load_state(读旧状态失败，改用全新状态)')
-    # 用北京时间初始化日期（跨天时仅回填跨天的 w42_cookie_watch）
+    # 用北京时间初始化日期（跨天时仅回填跨天字段：w42_cookie_watch / w42_refresh）
     beijing_date = get_beijing_time().date()
     fresh = {'date': str(beijing_date), 'morning': {}}
     fresh.update(legacy_watch)
@@ -773,13 +795,23 @@ def _probe_exit_ip(proxy, timeout=10):
     return ''
 
 
-def w42_one(cookie, uid_hint=''):
-    """单个 42w.shop 账号签到 - 返回 (msg, ok, detail)
+def w42_one(cookie, uid_hint='', refresh_token=''):
+    """单个 42x.shop 账号签到 - 返回 (msg, ok, detail)
 
-    鉴权：session Cookie + New-Api-User(数字 uid) 请求头。
+    鉴权（2026-10 站点迁移 42w.shop -> 42x.shop 后实测）：
+    - `/api/user/*` 不再接受旧的 `session=...` cookie，必须同时带
+      `Authorization: Bearer <access_token>`（JWT，寿命仅 15 分钟）与
+      `New-Api-User: <数字 uid>`，否则一律 401 AUTH_UNAUTHORIZED。
+    - access_token 用 POST /api/user/auth/refresh 现取现用，凭据是长期
+      cookie `new_api_refresh`（Path=/api/user/auth，普通请求不会带上，
+      所以从 /api/user/self 的 cURL 里抄不到它）。
+    - refresh 会【轮换】new_api_refresh，新值经 Set-Cookie 返回，放在
+      detail['new_refresh'] 交给调用方持久化，否则下一次即失效。
     代理：读取 W42_PROXY 环境变量（仅本平台使用，避免影响其它平台）；
           未设置时强制直连（trust_env=False，不读 runner 自带的环境代理）。
     """
+    new_refresh = ''
+    detail = {'username': uid_hint or '未知'}
     try:
         from datetime import datetime as _dt
         proxy = os.environ.get('W42_PROXY', '').strip()
@@ -788,12 +820,43 @@ def w42_one(cookie, uid_hint=''):
         # 只认可选的 W42_PROXY，避免被未知代理劫持导致空响应。
         s = requests.Session()
         s.trust_env = False
-        h = {
+
+        base_headers = {
             'User-Agent': COMMON_HEADERS['User-Agent'],
             'Accept': 'application/json',
             'Content-Type': 'application/json',
-            'Cookie': cookie,
+            'Origin': W42_API,
+            'Referer': W42_API + '/profile',
         }
+
+        # 0) 用长期 refresh cookie 换 access_token（浏览器就是这么续期的）
+        access_token = ''
+        if refresh_token:
+            try:
+                r = s.post(f'{W42_API}/api/user/auth/refresh',
+                           cookies={'new_api_refresh': refresh_token,
+                                    'new_api_has_session': '1'},
+                           headers=base_headers, timeout=15)
+                log(f"  42w refresh HTTP {r.status_code}")
+                m = re.search(r'new_api_refresh=([^;,\s]+)', r.headers.get('Set-Cookie', ''))
+                if m and m.group(1):
+                    new_refresh = m.group(1)
+                try:
+                    access_token = (r.json().get('data') or {}).get('access_token', '') or ''
+                except Exception:
+                    pass
+                if r.status_code != 200:
+                    log(f"  ⚠️ 42w refresh 失败：{(r.text or '')[:160]}")
+            except Exception as e:
+                log(f"  ⚠️ 42w refresh 异常：{type(e).__name__}: {e}")
+        else:
+            log("  ⚠️ 未配置 W42_REFRESH：无法换 access_token，签到必然 401"
+                "（凭据是浏览器里的 new_api_refresh cookie）")
+
+        h = dict(base_headers)
+        h['Cookie'] = cookie
+        if access_token:
+            h['Authorization'] = f'Bearer {access_token}'
         if uid_hint:
             h['New-Api-User'] = uid_hint
 
@@ -815,7 +878,7 @@ def w42_one(cookie, uid_hint=''):
         # 1) 校验登录态并解析 uid / 用户名
         info = _get_json(f'{W42_API}/api/user/self')
         if not info.get('success'):
-            return info.get('message', '未授权/登录失效'), False, {}
+            return info.get('message', '未授权/登录失效'), False, detail
         d = info.get('data', {})
         uid = uid_hint or str(d.get('id', ''))
         username = d.get('display_name') or d.get('username') or uid
@@ -830,7 +893,7 @@ def w42_one(cookie, uid_hint=''):
         today_q = (st.get('records') or [{}])[0].get('quota_awarded')
         total_days = st.get('total_checkins')
         total_q = st.get('total_quota')
-        detail = {'username': username, 'uid': uid,
+        detail = {'username': username, 'uid': uid, 'new_refresh': new_refresh,
                   'total_days': total_days, 'total_quota': total_q, 'today_quota': today_q}
 
         if res.get('success'):
@@ -849,7 +912,7 @@ def w42_one(cookie, uid_hint=''):
             msg = ("⛔ 42w 被 Cloudflare 拦截 (HTTP 403)：GitHub 数据中心 IP 通常被拦，"
                    "Cookie 本身有效。解决：① 配置 W42_PROXY 指向 Cloudflare 信任的出口 IP"
                    "（本机 Clash 无法从 GitHub 访问）；② 或改用本机定时任务跑 42w。")
-        return msg, False, {}
+        return msg, False, detail
 
 
 def _drive(platform, units, is_morning, state, expired, results):
@@ -921,10 +984,13 @@ def _smai_unit(sess, uid, refresh, fallback, i, new_refresh_list, key):
     return msg, ok, [f"• {uname}: {msg}"]
 
 
-def _w42_unit(ck, uid, fallback, key):
+def _w42_unit(ck, uid, refresh, new_refresh_list, key):
     log(f"  42w 签到... ({key})")
-    msg, ok, detail = w42_one(ck, uid)
-    uname = detail.get('username', fallback)
+    msg, ok, detail = w42_one(ck, uid, refresh)
+    uname = detail.get('username', key)
+    nr = detail.get('new_refresh')
+    if nr and nr != refresh:
+        new_refresh_list.append(nr)
     return msg, ok, [f"• {uname}: {msg}"]
 
 
@@ -1143,6 +1209,11 @@ def main():
     w42_uids = get_w42_uids()
     w_total = len(w42_cookies)
     if w42_cookies:
+        # 42x：先用长期 new_api_refresh 换一枚 15 分钟的 access_token 再签到
+        w42_refresh = get_w42_refresh(state)
+        if w42_refresh:
+            log("  42w 使用 new_api_refresh 换 token（轮换后的值将写回 state 缓存）")
+        new_refresh_list = []
         units = []
         for i, ck in enumerate(w42_cookies):
             key = ck[:20] + "..."
@@ -1153,9 +1224,14 @@ def main():
                 'display': fallback,
                 'warn': _w42_warn(fallback),
                 'skip_lines': [f"• {fallback}: 上午已签，跳过"],
-                'run': lambda ck=ck, uid=uid, fallback=fallback, key=key: _w42_unit(ck, uid, fallback, key),
+                'run': lambda ck=ck, uid=uid, fallback=fallback, key=key,
+                       rt=w42_refresh, nr=new_refresh_list: _w42_unit(ck, uid, rt, nr, key),
             })
         w_success, _ = _drive('w42', units, is_morning, state, expired, results)
+        # refresh 每用一次就轮换：把最新值写回 state（随 checkin-state 缓存跨运行持久化）
+        if new_refresh_list and new_refresh_list[-1] != w42_refresh:
+            state['w42_refresh'] = new_refresh_list[-1]
+            log("  💾 已更新 42w refresh token（下次运行自动接着用）")
     else:
         results.append("• 未配置，跳过")
         w_success = 0
