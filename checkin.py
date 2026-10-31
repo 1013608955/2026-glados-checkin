@@ -833,9 +833,15 @@ def w42_one(cookie, uid_hint='', refresh_token=''):
         access_token = ''
         if refresh_token:
             try:
+                # 有的部署会校验会话绑定：能从上送 Cookie 里捞到 server_name_session
+                # 就一并带上，避免「refresh 换到了 token 但 /api/user/self 仍 401」
+                refresh_cookies = {'new_api_refresh': refresh_token,
+                                   'new_api_has_session': '1'}
+                m_sess = re.search(r'server_name_session=([^;\s]+)', cookie or '')
+                if m_sess:
+                    refresh_cookies['server_name_session'] = m_sess.group(1)
                 r = s.post(f'{W42_API}/api/user/auth/refresh',
-                           cookies={'new_api_refresh': refresh_token,
-                                    'new_api_has_session': '1'},
+                           cookies=refresh_cookies,
                            headers=base_headers, timeout=15)
                 log(f"  42w refresh HTTP {r.status_code}")
                 m = re.search(r'new_api_refresh=([^;,\s]+)', r.headers.get('Set-Cookie', ''))
