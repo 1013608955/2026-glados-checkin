@@ -77,6 +77,7 @@ IKUUU_COOKIE="uid=1; email=a@qq.com; key=aaa; ip=bbb; expire_in=111&uid=2; email
 |--------|------|
 | `W42_COOKIE`（必填） | 登录 `https://api.42w.shop` 后的完整 Cookie 字符串。本机 Chrome 带调试端口启动后运行 `python cdp_get_cookies.py`，输出写入 `cookie_live.txt`，整行复制过来。**不要换行、不要加引号。** |
 | `W42_UID`（可选） | 数字 uid，如 `20147`。留空则脚本自动从 Cookie 识别。 |
+| `W42_REFRESH`（必填，2026-10 起） | 见下方「方式 B」同名条目说明（`new_api_refresh` Cookie，用于换 access_token）。 |
 | `W42_PROXY`（必填） | 一个 GitHub 能直连、且 Cloudflare 信任的出口代理。格式任选：`http://用户:密码@主机:端口`、`https://...`、`socks5://...`、`socks5h://...`（推荐 socks5h，域名也走代理）。 |
 
 **方式 B：给 Clash 订阅链接（W42_SUB，更省心）**
@@ -85,13 +86,15 @@ IKUUU_COOKIE="uid=1; email=a@qq.com; key=aaa; ip=bbb; expire_in=111&uid=2; email
 |--------|------|
 | `W42_COOKIE`（必填） | 同上。 |
 | `W42_UID`（可选） | 同上。 |
+| `W42_REFRESH`（必填，2026-10 起） | 站点迁到 `https://api.42x.shop` 后 `/api/user/*` 只认 `Authorization: Bearer`，签到前要用这个长期令牌调 `POST /api/user/auth/refresh` 现换 access_token。取值 = 浏览器里 **`new_api_refresh`** 这个 Cookie（F12 → Application → Cookies → api.42x.shop），形如 `sid.hmac`。注意它 `Path=/api/user/auth`，抓 `/api/user/self` 的 cURL **抄不到**，要单独复制。每次 refresh 会轮换该令牌，轮换后的新值由脚本写进 `.checkin_state.json`（随 checkin-state 缓存跨运行传递），所以一般只需首次填一次。 |
 | `W42_SUB`（必填） | 你的 Clash 订阅链接整串（如 `https://xxx.com/subscribe?token=...`）。工作流会用 mihomo 拉取订阅、自动抽取**单个节点**、起本地代理给 42w 用。 |
 | `W42_SUB_NODE`（可选） | 从订阅里「钉选」某个固定节点名。关键：填你本地 Clash 当初抓 Cookie 时用的那个节点名（出口 IP 一致，`cf_clearance` 才不会被 Cloudflare 判重挑战）。不填则 mihomo 用默认节点「新加坡高速 05\| CTCM」。首次运行日志会打印节点清单，照着挑一个填到这里即可。 |
 
 ```bash
 # 多账号：一行一个 Cookie（或用 & 分隔），W42_UID 同序对应，可留空自动识别
+# ⚠️ 2026-10 站点已迁到 api.42x.shop：W42_COOKIE 只作兜底，真正靠 W42_REFRESH 换 token
 W42_COOKIE="session=...; sidebar_state=true; server_name_session=...; cf_clearance=..."
-W42_UID="20147"
+W42_REFRESH="1684940f-....e1c6e41f..."   # = 浏览器 new_api_refresh Cookie 的值
 W42_SUB="https://your-clash-subscribe-link"
 W42_SUB_NODE="新加坡高速 05| CTCM"
 ```
