@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + 42w.shop)
+2026 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)
 功能：
-- GLaDOS / ikuuu / SMAI.AI / 42w.shop 全自动签到
+- GLaDOS / ikuuu / SMAI.AI 全自动签到
 - 多账号支持（& 分隔）
 - 按账号级别：上午成功 → 下午跳过该账号
 - Token 过期自动检测 + 警告推送
@@ -16,7 +16,6 @@ import sys
 import re
 import time
 import traceback
-from datetime import date  # 仅顶层需要 date（W42 Cookie 龄期）；datetime/timedelta 在各函数内局部导入
 
 if sys.platform.startswith('win'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -35,7 +34,6 @@ COMMON_HEADERS = {
     'Accept': 'application/json, text/plain, */*',
 }
 SMAI_API = "https://api.smai.ai"
-W42_API = "https://api.42x.shop"   # 2026-10 站点迁移：42w.shop -> 42x.shop（同一套 New API 后端）
 STATE_FILE = os.environ.get("CHECKIN_STATE_FILE", ".checkin_state.json")
 
 # ================= 工具函数 =================
@@ -168,34 +166,6 @@ def persist_smai_refresh(new_list):
     else:
         log("  ℹ️ 未配置 PAT（SMAI_PERSIST_PAT/REPO_PAT）：请手动把 smai_refresh_latest.txt 内容更新到 SMAI_REFRESH Secret，或重新抓取 new_api_refresh")
 
-def get_w42_cookies():
-    raw = os.environ.get('W42_COOKIE', '')
-    if not raw: return []
-    return [c.strip() for c in (raw.split('\n') if '\n' in raw else raw.split('&')) if c.strip()]
-
-def get_w42_uids():
-    raw = os.environ.get('W42_UID', '')
-    if not raw: return []
-    return [s.strip() for s in (raw.split('\n') if '\n' in raw else raw.split('&')) if s.strip()]
-
-def get_w42_refresh(state=None):
-    """取 42x 的长期刷新令牌（浏览器 `new_api_refresh` cookie 的值）。
-
-    优先级：state 里上一轮轮换下来的新 token > W42_REFRESH Secret。
-    为什么必须走 state：`/api/user/auth/refresh` 每调用一次就【轮换】
-    new_api_refresh（旧值立刻失效），而仓库没配 PAT、CI 无法回写 Secret；
-    `.checkin_state.json` 本身由 Actions Cache 跨运行持久化，新 token
-    存进去就能自然接续。
-    """
-    raw = ''
-    if isinstance(state, dict):
-        raw = str(state.get('w42_refresh') or '').strip()
-    if not raw:
-        raw = os.environ.get('W42_REFRESH', '').strip()
-    if raw.startswith('new_api_refresh='):
-        raw = raw[len('new_api_refresh='):].strip()
-    return raw
-
 # ================= 状态管理 =================
 def load_state():
     legacy_watch = {}
@@ -203,14 +173,6 @@ def load_state():
         if os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
-                # 跨天数据：W42 Cookie 龄期监控 + 42x 轮换后的 refresh token 必须
-                # 跨天保留；每日签到记录按天重置
-                w = state.get('w42_cookie_watch')
-                if isinstance(w, dict):
-                    legacy_watch['w42_cookie_watch'] = w
-                r = state.get('w42_refresh')
-                if isinstance(r, str) and r:
-                    legacy_watch['w42_refresh'] = r
                 # 用北京时间判断日期
                 beijing_date = get_beijing_time().date()
                 if state.get('date') == str(beijing_date):
@@ -221,10 +183,9 @@ def load_state():
                     return state
     except Exception:
         log_traceback('load_state(读旧状态失败，改用全新状态)')
-    # 用北京时间初始化日期（跨天时仅回填跨天字段：w42_cookie_watch / w42_refresh）
+    # 用北京时间初始化日期
     beijing_date = get_beijing_time().date()
     fresh = {'date': str(beijing_date), 'morning': {}}
-    fresh.update(legacy_watch)
     return fresh
 
 def save_state(state):
@@ -261,13 +222,6 @@ EXPIRED_KEYWORDS = {
     'glados': ['unauthorized', 'login', '请重新登录', 'invalid token', '401'],
     'ikuuu': ['密码错误', '用户不存在', '登录失败', 'unauthorized', '401', '403', '405'],
     'smai': ['未登录', '无权', 'unauthorized', '401', 'expired', '过期', '未提供'],
-    # w42 除了凭据失效，还有两类高频故障也必须能进告警，否则会「静默全绿」：
-    #   · 403 / cf-ray      → Cloudflare 拦截，多半是代理出口 IP 变了
-    #   · ProxyError / 连接失败 / 超时 / 空响应 → mihomo 隧道没起来或节点已失效
-    # 注意：is_expired() 会把 msg 转小写，关键词一律写小写。
-    'w42': ['未授权', 'unauthorized', '401', '登录失效', 'expired', '过期', '无效',
-            '403', 'cf-ray', 'proxyerror', 'connectionerror', 'connection aborted',
-            'max retries', 'timed out', 'timeout', '空响应', '非json', '被 cloudflare 拦截'],
 }
 
 def is_expired(platform, msg):
@@ -762,165 +716,6 @@ def smai_one(session, uid_hint='', refresh_token=''):
         return f"{type(e).__name__}: {str(e)[:120]}", False, detail
 
 
-# ================= 42w.shop (New API) =================
-def _probe_exit_ip(proxy, timeout=10):
-    """通过代理探测当前出口 IP。
-
-    为什么需要：42w 的 `cf_clearance` 与抓 Cookie 时的**出口 IP 绑定**，
-    机场节点一旦轮换 IP，签到就会 403，而 Cookie 本身看不出任何异常
-    （这也是 42w 最隐蔽的失效方式）。记录出口 IP 能在「静默 403」发生前
-    就把变化暴露出来。
-
-    探测失败一律返回空串，绝不影响签到主流程。
-    """
-    if not proxy:
-        return ''
-    proxies = {'http': proxy, 'https': proxy}
-    for url in ("https://api.ipify.org?format=json",
-                "https://ifconfig.me/ip",
-                "https://icanhazip.com"):
-        try:
-            s = requests.Session()
-            s.trust_env = False   # 只认显式传入的代理，不被环境代理干扰
-            r = s.get(url, proxies=proxies, timeout=timeout)
-            txt = (r.text or '').strip()
-            if not txt:
-                continue
-            ip = (r.json() or {}).get('ip', '') if txt.startswith('{') \
-                else txt.splitlines()[0].strip()
-            if ip:
-                return ip
-        except Exception:
-            continue
-    return ''
-
-
-def w42_one(cookie, uid_hint='', refresh_token=''):
-    """单个 42x.shop 账号签到 - 返回 (msg, ok, detail)
-
-    鉴权（2026-10 站点迁移 42w.shop -> 42x.shop 后实测）：
-    - `/api/user/*` 不再接受旧的 `session=...` cookie，必须同时带
-      `Authorization: Bearer <access_token>`（JWT，寿命仅 15 分钟）与
-      `New-Api-User: <数字 uid>`，否则一律 401 AUTH_UNAUTHORIZED。
-    - access_token 用 POST /api/user/auth/refresh 现取现用，凭据是长期
-      cookie `new_api_refresh`（Path=/api/user/auth，普通请求不会带上，
-      所以从 /api/user/self 的 cURL 里抄不到它）。
-    - refresh 会【轮换】new_api_refresh，新值经 Set-Cookie 返回，放在
-      detail['new_refresh'] 交给调用方持久化，否则下一次即失效。
-    代理：读取 W42_PROXY 环境变量（仅本平台使用，避免影响其它平台）；
-          未设置时强制直连（trust_env=False，不读 runner 自带的环境代理）。
-    """
-    new_refresh = ''
-    detail = {'username': uid_hint or '未知'}
-    try:
-        from datetime import datetime as _dt
-        proxy = os.environ.get('W42_PROXY', '').strip()
-        proxies = {'http': proxy, 'https': proxy} if proxy else None
-        # 强制直连，忽略 runner 可能自带的环境代理（HTTP_PROXY/HTTPS_PROXY），
-        # 只认可选的 W42_PROXY，避免被未知代理劫持导致空响应。
-        s = requests.Session()
-        s.trust_env = False
-
-        base_headers = {
-            'User-Agent': COMMON_HEADERS['User-Agent'],
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Origin': W42_API,
-            'Referer': W42_API + '/profile',
-        }
-
-        # 0) 用长期 refresh cookie 换 access_token（浏览器就是这么续期的）
-        access_token = ''
-        if refresh_token:
-            try:
-                # 有的部署会校验会话绑定：能从上送 Cookie 里捞到 server_name_session
-                # 就一并带上，避免「refresh 换到了 token 但 /api/user/self 仍 401」
-                refresh_cookies = {'new_api_refresh': refresh_token,
-                                   'new_api_has_session': '1'}
-                m_sess = re.search(r'server_name_session=([^;\s]+)', cookie or '')
-                if m_sess:
-                    refresh_cookies['server_name_session'] = m_sess.group(1)
-                r = s.post(f'{W42_API}/api/user/auth/refresh',
-                           cookies=refresh_cookies,
-                           headers=base_headers, timeout=15)
-                log(f"  42w refresh HTTP {r.status_code}")
-                m = re.search(r'new_api_refresh=([^;,\s]+)', r.headers.get('Set-Cookie', ''))
-                if m and m.group(1):
-                    new_refresh = m.group(1)
-                try:
-                    access_token = (r.json().get('data') or {}).get('access_token', '') or ''
-                except Exception:
-                    pass
-                if r.status_code != 200:
-                    log(f"  ⚠️ 42w refresh 失败：{(r.text or '')[:160]}")
-            except Exception as e:
-                log(f"  ⚠️ 42w refresh 异常：{type(e).__name__}: {e}")
-        else:
-            log("  ⚠️ 未配置 W42_REFRESH：无法换 access_token，签到必然 401"
-                "（凭据是浏览器里的 new_api_refresh cookie）")
-
-        h = dict(base_headers)
-        h['Cookie'] = cookie
-        if access_token:
-            h['Authorization'] = f'Bearer {access_token}'
-        if uid_hint:
-            h['New-Api-User'] = uid_hint
-
-        def _get_json(url, method='GET', data=None):
-            r = s.request(method, url, headers=h, proxies=proxies, timeout=15, data=data)
-            body = r.text or ''
-            ctype = r.headers.get('Content-Type', '')
-            if not body.strip():
-                # 空响应：通常是被网络层/代理拦掉，或 Cloudflare 重置
-                raise ValueError(f"HTTP {r.status_code} 空响应 server={r.headers.get('server','?')}"
-                                 f" cf-ray={r.headers.get('cf-ray','?')}")
-            if 'application/json' not in ctype.lower():
-                # 非 JSON：极可能是 Cloudflare 挑战页 / 拦截页
-                snippet = ' '.join(body[:160].split())
-                raise ValueError(f"HTTP {r.status_code} 非JSON(ct={ctype}) "
-                                 f"cf-ray={r.headers.get('cf-ray','?')} :: {snippet}")
-            return r.json()
-
-        # 1) 校验登录态并解析 uid / 用户名
-        info = _get_json(f'{W42_API}/api/user/self')
-        if not info.get('success'):
-            return info.get('message', '未授权/登录失效'), False, detail
-        d = info.get('data', {})
-        uid = uid_hint or str(d.get('id', ''))
-        username = d.get('display_name') or d.get('username') or uid
-        if not uid_hint:
-            h['New-Api-User'] = uid
-
-        # 2) 执行签到
-        res = _get_json(f'{W42_API}/api/user/checkin', method='POST', data='{}')
-
-        # 3) 拉取统计用于汇总
-        st = _get_json(f'{W42_API}/api/user/checkin').get('data', {}).get('stats', {})
-        today_q = (st.get('records') or [{}])[0].get('quota_awarded')
-        total_days = st.get('total_checkins')
-        total_q = st.get('total_quota')
-        detail = {'username': username, 'uid': uid, 'new_refresh': new_refresh,
-                  'total_days': total_days, 'total_quota': total_q, 'today_quota': today_q}
-
-        if res.get('success'):
-            earned = res.get('data', {}).get('quota_awarded', today_q)
-            return f"签到成功 +{earned}，累计 {total_q}，共 {total_days} 天", True, detail
-        msg = res.get('message', '签到失败')
-        if '已签到' in msg:
-            return f"今日已签到 (今日 +{today_q}，累计 {total_q}，共 {total_days} 天)", True, detail
-        return msg, False, detail
-    except Exception as e:
-        log_traceback('w42_one')
-        msg = f"{type(e).__name__}: {str(e)[:120]}"
-        # Cloudflare 在 GitHub 数据中心 IP 上直接 403 拦截（cf-ray 头可见），
-        # Cookie 本身没问题，是出口 IP 被拦。给出可操作的提示而非笼统报错。
-        if 'cf-ray' in msg or ('403' in msg and '非JSON' in msg):
-            msg = ("⛔ 42w 被 Cloudflare 拦截 (HTTP 403)：GitHub 数据中心 IP 通常被拦，"
-                   "Cookie 本身有效。解决：① 配置 W42_PROXY 指向 Cloudflare 信任的出口 IP"
-                   "（本机 Clash 无法从 GitHub 访问）；② 或改用本机定时任务跑 42w。")
-        return msg, False, detail
-
-
 def _drive(platform, units, is_morning, state, expired, results):
     """通用平台驱动：跑完一个平台的所有账号，返回 (success, total)。
 
@@ -990,35 +785,6 @@ def _smai_unit(sess, uid, refresh, fallback, i, new_refresh_list, key):
     return msg, ok, [f"• {uname}: {msg}"]
 
 
-def _w42_unit(ck, uid, refresh, new_refresh_list, key):
-    log(f"  42w 签到... ({key})")
-    msg, ok, detail = w42_one(ck, uid, refresh)
-    uname = detail.get('username', key)
-    nr = detail.get('new_refresh')
-    if nr and nr != refresh:
-        new_refresh_list.append(nr)
-    return msg, ok, [f"• {uname}: {msg}"]
-
-
-def _w42_warn(display):
-    """按失败原因给出可操作的告警文案。
-
-    w42 的失败原因差异极大（Cookie 过期 / CF 拦截 / 代理不通），
-    统一说「Cookie 可能过期」会把排障带到沟里去，所以按 msg 动态判断。
-    """
-    def _warn(msg):
-        m = (msg or '').lower()
-        if 'cf-ray' in m or '403' in m or 'cloudflare' in m:
-            return (f"🔷 42w [{display}] 被 Cloudflare 拦截：出口 IP 很可能已变更，"
-                    f"cf_clearance 与旧 IP 绑定。请用同一出口重抓 W42_COOKIE")
-        if any(k in m for k in ('proxyerror', 'connectionerror', 'connection aborted',
-                                'max retries', 'timed out', 'timeout', '空响应', '非json')):
-            return (f"🔷 42w [{display}] 网络不通：mihomo 隧道未就绪或代理节点已失效，"
-                    f"请检查 W42_SUB / W42_SUB_NODE")
-        return f"🔷 42w [{display}] Cookie 可能过期，请重新抓取"
-    return _warn
-
-
 def _ikuuu_unit(mode, val, display, key):
     """ikuuu 两种登录形态（Cookie 直签 / 账号密码登录）共用同一个执行入口。"""
     log(f"  ikuuu 签到... ({key})")
@@ -1050,7 +816,7 @@ def main():
     is_morning = beijing_time.hour < 15  # 北京时间 0-15 点为上午，15-24 点为下午
 
     log("=" * 50)
-    log(f"🚀 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI + 42w.shop)")
+    log(f"🚀 多平台自动签到 (GLaDOS + ikuuu + SMAI.AI)")
     log(f"⏰ {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} {'(上午)' if is_morning else '(下午)'}")
     log("=" * 50)
 
@@ -1063,8 +829,6 @@ def main():
     ikuuu_accounts = get_ikuuu_accounts()
     smai_sessions = get_smai_sessions()
     smai_user_ids = get_smai_user_ids()
-    w42_cookies = get_w42_cookies()
-    w42_uids = get_w42_uids()
     # ikuuu 的 key：cookie 模式用 "cookie_N"（N 会随数组顺序变，但账号集合稳定），
     # 密码模式用 email（跨天唯一且稳定，便于「上午成功→下午跳过」按账号记忆）。
     ikuuu_keys = []
@@ -1079,7 +843,6 @@ def main():
         'glados': [f"account_{i+1}" for i in range(len(glados_cookies))],
         'ikuuu': ikuuu_keys,
         'smai': [s[:20]+"..." for s in smai_sessions],
-        'w42': [c[:20]+"..." for c in w42_cookies],
     }
 
     # 下午：全部成功则跳过
@@ -1087,28 +850,6 @@ def main():
         log("🎉 上午全部成功，下午跳过！")
         log("SKIP_AFTERNOON=true")
         return
-
-    # ========== W42 Cookie 龄期预警（实测 session 有效期约 26 天）==========
-    # 原理：对 W42_COOKIE 内容取指纹存入跨天持久的 state；同值连续使用 ≥18 天
-    # 就在推送里预警，避免「26 天后静默失效才发现」。换新 Cookie 自动重置计时。
-    if w42_cookies:
-        import hashlib
-        fp = hashlib.sha256('|'.join(w42_cookies).encode('utf-8')).hexdigest()[:16]
-        today = get_beijing_time().date()
-        watch = state.setdefault('w42_cookie_watch', {})
-        if watch.get('hash') != fp:
-            watch['hash'] = fp
-            watch['first_seen'] = str(today)
-        else:
-            try:
-                age = (today - date.fromisoformat(watch.get('first_seen', str(today)))).days
-            except Exception:
-                age = 0
-                watch['first_seen'] = str(today)
-            if age >= 18:
-                warn = f"🔷 42w Cookie 已连续使用 {age} 天（实测有效期约 26 天），请尽快刷新 W42_COOKIE"
-                expired.append(warn)
-                log(f"⚠️ {warn}")
 
     # ========== GLaDOS ==========
     if glados_cookies:
@@ -1187,72 +928,16 @@ def main():
         results.append("• 未配置，跳过")
         s_success = 0
 
-    # ========== 42w 出口 IP 记录与变更告警 ==========
-    # cf_clearance 与抓 Cookie 时的出口 IP 绑定：节点 IP 一轮换，42w 立刻 403，
-    # 而 Cookie 本身看起来毫无异常。这里把出口 IP 记进 state，一旦变化就提前告警，
-    # 免得等签到失败才发现问题。
-    w42_proxy = (os.environ.get('W42_PROXY') or '').strip()
-    exit_ip = _probe_exit_ip(w42_proxy)
-    if exit_ip:
-        log(f"🌐 42w 出口 IP：{exit_ip}")
-        ip_watch = state.setdefault('w42_exit_ip_watch', {})
-        prev_ip = ip_watch.get('ip', '')
-        today_s = str(get_beijing_time().date())
-        if prev_ip and prev_ip != exit_ip:
-            # 只记日志、不打进告警：换用 GLaDOS 这类多出口节点后，每次拉到的
-            # 出口 IP 本来就会变，而 42w 依然签到成功 —— 升级成告警只会变成噪音。
-            # 真正因 IP 失配导致的失败，会以 Cloudflare 403 的形式单独告警。
-            log(f"ℹ️ 42w 出口 IP 变化：{prev_ip} → {exit_ip}（多出口节点属正常，仅供参考）")
-        if ip_watch.get('ip') != exit_ip:
-            ip_watch['ip'] = exit_ip
-            ip_watch['since'] = today_s
-        ip_watch['last_seen'] = today_s
-    elif w42_proxy:
-        log("⚠️ 42w 出口 IP 探测失败（代理可能未就绪），签到照常继续")
-
-    # ========== 42w.shop ==========
-    results.append("\n### 🔷 42w.shop 签到结果")
-    w42_uids = get_w42_uids()
-    w_total = len(w42_cookies)
-    if w42_cookies:
-        # 42x：先用长期 new_api_refresh 换一枚 15 分钟的 access_token 再签到
-        w42_refresh = get_w42_refresh(state)
-        if w42_refresh:
-            log("  42w 使用 new_api_refresh 换 token（轮换后的值将写回 state 缓存）")
-        new_refresh_list = []
-        units = []
-        for i, ck in enumerate(w42_cookies):
-            key = ck[:20] + "..."
-            uid = w42_uids[i] if i < len(w42_uids) else ''
-            fallback = uid or f"账号{i+1}"
-            units.append({
-                'key': key,
-                'display': fallback,
-                'warn': _w42_warn(fallback),
-                'skip_lines': [f"• {fallback}: 上午已签，跳过"],
-                'run': lambda ck=ck, uid=uid, fallback=fallback, key=key,
-                       rt=w42_refresh, nr=new_refresh_list: _w42_unit(ck, uid, rt, nr, key),
-            })
-        w_success, _ = _drive('w42', units, is_morning, state, expired, results)
-        # refresh 每用一次就轮换：把最新值写回 state（随 checkin-state 缓存跨运行持久化）
-        if new_refresh_list and new_refresh_list[-1] != w42_refresh:
-            state['w42_refresh'] = new_refresh_list[-1]
-            log("  💾 已更新 42w refresh token（下次运行自动接着用）")
-    else:
-        results.append("• 未配置，跳过")
-        w_success = 0
-
     save_state(state)
 
     # ========== 推送 ==========
     # 汇总统计
-    total_done = g_success + i_success + s_success + w_success
-    total_all = (g_total if g_total else 0) + (i_total if i_total else 0) + (s_total if s_total else 0) + (w_total if w_total else 0)
+    total_done = g_success + i_success + s_success
+    total_all = (g_total or 0) + (i_total or 0) + (s_total or 0)
     summary = f"📊 汇总：{total_done}/{total_all} 成功"
     if g_total: summary += f" | GLaDOS {g_success}/{g_total}"
     if i_total: summary += f" | ikuuu {i_success}/{i_total}"
     if s_total: summary += f" | SMAI {s_success}/{s_total}"
-    if w_total: summary += f" | 42w {w_success}/{w_total}"
 
     body = ""
     if expired:

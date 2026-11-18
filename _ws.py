@@ -38,7 +38,10 @@ class WS:
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
-            "Origin: http://127.0.0.1:9222\r\n"
+            # 不发 Origin：Chrome 新版会对 Origin 做白名单校验，未带
+            # --remote-allow-origins=* 时一律 403。而**完全不带 Origin** 的
+            # 非浏览器客户端反而能通过（实测 2026-11-19，四种 Origin 只有
+            # 「不带」返回 101）。这样不必强求用户用特殊参数重启 Chrome。
             "\r\n"
         )
         self.sock.sendall(req.encode())

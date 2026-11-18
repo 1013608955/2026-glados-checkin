@@ -1,5 +1,8 @@
 # 代码库优化与安全审计（2026-08-23）
 
+> **注（2026-11-19）**：42w.shop 已整体移除（含 mihomo 代理、CDP 抓 Cookie、
+> 订阅同步脚本）。本文中的 42w 相关内容仅作历史记录保留，不再对应现有代码。
+
 覆盖文件：`checkin.py`(791) · `_ws.py`(115) · `cdp_get_cookies.py`(45) · `smai_capture.py`(178)
 · `check_expiry.py`(102) · `gen_mihomo_config.py`(93) · `run_checkin.sh`(35) · `requirements.txt`
 · `.github/workflows/checkin.yml` · `keep-alive.yml` · `.gitignore`
