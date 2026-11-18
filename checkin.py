@@ -364,6 +364,20 @@ class GLaDOS:
         return None
 
     def checkin(self):
+        # Turnstile 要求「真实浏览器环境」：纯 requests 恒定返回
+        # {"code":5,"reason":"turnstile"}（2026-11-19 实测：同 cookie、同出口 IP，
+        # 浏览器能过、纯 HTTP 不能过）。故签到优先走无头浏览器通道。
+        try:
+            import glados_browser
+            msg, ok = glados_browser.checkin(self.cookie)
+            self.checkin_msg, self.success = msg, ok
+            if ok:
+                return
+            log(f"  GLaDOS 浏览器通道未通过：{msg}")
+        except Exception as e:
+            log(f"  GLaDOS 浏览器通道异常：{type(e).__name__}: {str(e)[:80]}")
+
+        # 回退：纯 API（站点若放开 Turnstile 即生效）
         r = self.req('POST', '/api/user/checkin', {'token': 'glados.cloud'})
         if r:
             self.checkin_msg = r.get('message', '签到失败')
