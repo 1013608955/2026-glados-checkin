@@ -58,8 +58,36 @@ def parse_cookie(raw):
     return out
 
 
+def _click_at(send, x, y):
+    """在视口坐标发真实鼠标事件（带移动轨迹）。
+
+    为什么不能只用 JS click：Turnstile 会检查事件 isTrusted，JS 派发的
+    合成事件一律被丢弃（表现为按钮永远卡在 Verifying…、getResponse() 为 None）。
+    而 CDP 的 Input.dispatchMouseEvent 是浏览器层面的真实输入，isTrusted=true。
+    额外补几步 mouseMoved，让轨迹不像"瞬移点击"。
+    """
+    for i in range(1, 6):
+        send('Input.dispatchMouseEvent', {
+            'type': 'mouseMoved',
+            'x': x - 120 + 120 * i / 5,
+            'y': y - 60 + 60 * i / 5,
+        })
+        time.sleep(0.08)
+    send('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': x, 'y': y,
+                                      'button': 'left', 'clickCount': 1})
+    time.sleep(0.12)
+    send('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': x, 'y': y,
+                                      'button': 'left', 'clickCount': 1})
+
+
 def checkin(cookie, timeout=90):
-    """返回 (message, ok)。任何异常都降级成 (错误描述, False)，不抛出。"""
+    """返回 (message, ok)。任何异常都降级成 (错误描述, False)，不抛出。
+
+    流程（必须走页面按钮，不能直接 fetch）：
+      点 Checkin → Turnstile 弹出交互框 → 用真实鼠标点它 → 页面自动完成签到
+    2026-11-23 实测：直接 fetch 接口恒返回 reason=turnstile；而真人点一下
+    验证框即成功 —— 所以关键是**真实鼠标事件**，不是伪造请求。
+    """
     cookies = parse_cookie(cookie)
     if not cookies:
         return '未提供 Cookie', False
@@ -70,11 +98,19 @@ def checkin(cookie, timeout=90):
 
     port = 9333
     profile = '/tmp/glados-chrome-%d' % int(time.time() * 1000)
-    proc = subprocess.Popen(
-        [chrome, '--headless=new', '--no-sandbox', '--disable-gpu',
-         '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
-         f'--remote-debugging-port={port}', f'--user-data-dir={profile}', 'about:blank'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 关键：无头模式下 Turnstile **不渲染交互框**（实测 rect 恒为空、无 token），
+    # 有显示环境时才会有可点击的验证框。CI 用 xvfb-run 提供 DISPLAY，
+    # 这里据此自动切「有头」——无需额外环境变量。
+    headless = not os.environ.get('DISPLAY')
+    args = [chrome]
+    if headless:
+        args.append('--headless=new')
+    args += ['--no-sandbox', '--disable-gpu',
+             '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
+             # 视口要够大：Turnstile 验证框常在 x≈900 处，800x600 会落在视口外
+             '--window-size=1920,1080',
+             f'--remote-debugging-port={port}', f'--user-data-dir={profile}', 'about:blank']
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ws = None
     try:
         # 等 DevTools 端点就绪（CI 冷启动约 3~7 秒）
@@ -120,7 +156,7 @@ def checkin(cookie, timeout=90):
         send('Network.setCookies', {'cookies': cookies})
         send('Page.navigate', {'url': CHECKIN_URL})
 
-        # 等页面出现（最多 ~30 秒）。被 CF 挑战时标题会是 Just a moment...
+        # 等页面出现（被 CF 挑战时标题会是 Just a moment...）
         for _ in range(30):
             time.sleep(1)
             title = js('document.title') or ''
@@ -130,31 +166,88 @@ def checkin(cookie, timeout=90):
         if 'just a moment' in title.lower():
             return '被 Cloudflare 挑战页拦截（浏览器未能自动通过）', False
 
-        body = js("""(async () => {
-          try {
-            const r = await fetch('/api/user/checkin', {
-              method: 'POST', headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({token: 'glados.cloud'}), credentials: 'include'
-            });
-            return await r.text();
-          } catch (e) { return 'EXC: ' + e.message; }
+        # GLaDOS 是 SPA：标题秒出但按钮要等 React 渲染完。
+        # 必须等到签到按钮真正出现，否则会误判成「找不到按钮」。
+        for _ in range(40):
+            ready = js("""!!Array.from(document.querySelectorAll('button'))
+                             .find(e => /Checkin/i.test(e.innerText || ''))""")
+            if ready:
+                break
+            time.sleep(1)
+        else:
+            body_head = (js('document.body.innerText') or '')[:120].replace('\n', ' | ')
+            return f'页面未渲染出签到按钮（可见文本：{body_head}）', False
+
+        # 已签到：直接返回
+        btn_text = js("""(() => {
+          const b = Array.from(document.querySelectorAll('button'))
+            .find(e => /Checkin/.test(e.innerText || ''));
+          return b ? b.innerText.trim() : '';
+        })()""") or ''
+        if 'Got' in btn_text and 'Point' in btn_text:
+            return btn_text, True
+
+        # 1) 点 Checkin 按钮（真实鼠标）
+        box = js("""(() => {
+          const b = Array.from(document.querySelectorAll('button'))
+            .find(e => (e.innerText || '').trim() === 'Checkin');
+          if (!b) return null;
+          b.scrollIntoView({block:'center'});
+          const r = b.getBoundingClientRect();
+          return {x: r.x + r.width/2, y: r.y + r.height/2, text: b.innerText};
         })()""")
-        if not body or body.startswith('EXC:'):
-            return f'浏览器内请求失败：{body}', False
+        if not box:
+            return f'找不到签到按钮（当前按钮：{btn_text}）', False
+        _click_at(send, box['x'], box['y'])
 
-        try:
-            data = json.loads(body)
-        except Exception:
-            return f'响应非 JSON：{body[:120]}', False
+        # 2) 等 Turnstile 交互框出现，然后真实鼠标点它
+        clicked_turnstile = False
+        deadline = time.time() + timeout - 40
+        while time.time() < deadline:
+            time.sleep(2)
+            state = js("""(() => {
+              const b = Array.from(document.querySelectorAll('button'))
+                .find(e => /Checkin|Checking|Verif/i.test(e.innerText || ''));
+              const inp = document.querySelector('input[id^=cf-chl-widget]');
+              let rect = null;
+              if (inp && inp.parentElement) {
+                const r = inp.parentElement.getBoundingClientRect();
+                if (r.width > 100 && r.height > 30) rect = {x: r.x + r.width/2, y: r.y + r.height/2};
+              }
+              const tok = (window.turnstile && turnstile.getResponse) ? turnstile.getResponse() : null;
+              return {btn: b ? b.innerText.trim() : '', rect: rect, token: !!tok};
+            })()""") or {}
+            if 'Got' in state.get('btn', ''):
+                return state['btn'], True
+            if state.get('token'):
+                # token 已就绪，通常页面会自动继续；再点一次按钮兜底
+                time.sleep(2)
+                if not clicked_turnstile:
+                    js("""(() => {
+                      const b = Array.from(document.querySelectorAll('button'))
+                        .find(e => /Checkin/i.test(e.innerText || ''));
+                      if (b && !b.disabled) b.click();
+                    })()""")
+                    clicked_turnstile = True
+            elif state.get('rect') and not clicked_turnstile:
+                _click_at(send, state['rect']['x'], state['rect']['y'])
+                clicked_turnstile = True
 
-        msg = data.get('message') or str(data)[:120]
-        code = data.get('code')
-        # code=1 + repeated=true 表示「今天已签」——也算成功
-        ok = bool(data.get('repeated')) or 'logged' in msg.lower() \
-            or 'already' in msg.lower() or 'points' in msg.lower()
-        if code == 5:
-            return f'Turnstile 未通过：{msg}', False
-        return msg, ok
+        # 3) 收尾判定
+        final = js("""(() => {
+          const b = Array.from(document.querySelectorAll('button'))
+            .find(e => /Checkin/i.test(e.innerText || ''));
+          const t = document.body.innerText || '';
+          const streak = (t.match(/STREAK\\s*\\n?\\s*(\\d+)/) || [])[1] || '';
+          return {btn: b ? b.innerText.trim() : '', streak: streak};
+        })()""") or {}
+        btn = final.get('btn', '')
+        if 'Got' in btn:
+            return btn, True
+        token = js("(window.turnstile && turnstile.getResponse) ? turnstile.getResponse() : ''")
+        if token:
+            return f'Turnstile 已通过但签到未确认（按钮：{btn}）', False
+        return f'Turnstile 未通过（按钮：{btn}，无 token）', False
     except Exception as e:
         return f'{type(e).__name__}: {str(e)[:120]}', False
     finally:

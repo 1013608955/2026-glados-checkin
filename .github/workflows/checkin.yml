@@ -68,12 +68,31 @@ jobs:
           restore-keys: |
             ikuuu-cookie-v1-
 
+      - name: 安装 Xvfb（GLaDOS 需要「有头」浏览器过 Turnstile）
+        # 无头模式下 Turnstile 不渲染交互框，必须给它一个虚拟显示。
+        # 安装失败不阻断：glados_browser 会退回无头模式（签到可能失败，其余平台照常）。
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            echo "xvfb-run 已存在，跳过安装"
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          fi
+
       - name: 执行多平台签到
         id: checkin
-        # 正常耗时 < 1 分钟（实测 14~53 秒）。窗口不宜过大：一旦某个请求卡住，
+        # 正常耗时 < 1 分钟。窗口不宜过大：一旦某个请求卡住，
         # 会白等到 job 级超时被 cancelled，而 cancelled 的 job 不留日志。
         # 4 分钟 —— 宁可让这一步「失败」（有日志可查），也不要整体被取消。
-        run: python checkin.py 2>&1 | tee checkin_output.txt
+        # xvfb-run 提供 DISPLAY，glados_browser 会自动切到有头模式。
+        run: |
+          if command -v xvfb-run >/dev/null 2>&1; then
+            xvfb-run -a python checkin.py 2>&1 | tee checkin_output.txt
+          else
+            echo "⚠️ 无 xvfb-run，退回无头模式（GLaDOS 可能失败）"
+            python checkin.py 2>&1 | tee checkin_output.txt
+          fi
         timeout-minutes: 4
 
       - name: 检查下午免签
