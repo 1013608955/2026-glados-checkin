@@ -181,7 +181,7 @@ def checkin(cookie, timeout=90):
         # 必须等到签到按钮真正出现，否则会误判成「找不到按钮」。
         for _ in range(40):
             ready = js("""!!Array.from(document.querySelectorAll('button'))
-                             .find(e => /Checkin/i.test(e.innerText || ''))""")
+                             .find(e => /Checkin|Done for today|Checked in/i.test(e.innerText || ''))""")
             if ready:
                 break
             time.sleep(1)
@@ -192,7 +192,7 @@ def checkin(cookie, timeout=90):
         # 已签到：直接返回
         btn_text = js("""(() => {
           const b = Array.from(document.querySelectorAll('button'))
-            .find(e => /Checkin/.test(e.innerText || ''));
+            .find(e => /Checkin|Done for today|Checked in/i.test(e.innerText || ''));
           return b ? b.innerText.trim() : '';
         })()""") or ''
         # 已签到的按钮文案有两种实测形态：
@@ -222,7 +222,7 @@ def checkin(cookie, timeout=90):
             time.sleep(2)
             state = js("""(() => {
               const b = Array.from(document.querySelectorAll('button'))
-                .find(e => /Checkin|Checking|Verif/i.test(e.innerText || ''));
+                .find(e => /Checkin|Checking|Verif|Done for today|Checked in/i.test(e.innerText || ''));
               const inp = document.querySelector('input[id^=cf-chl-widget]');
               let rect = null;
               if (inp && inp.parentElement) {
@@ -251,7 +251,7 @@ def checkin(cookie, timeout=90):
         # 3) 收尾判定
         final = js("""(() => {
           const b = Array.from(document.querySelectorAll('button'))
-            .find(e => /Checkin/i.test(e.innerText || ''));
+            .find(e => /Checkin|Done for today|Checked in/i.test(e.innerText || ''));
           const t = document.body.innerText || '';
           const streak = (t.match(/STREAK\\s*\\n?\\s*(\\d+)/) || [])[1] || '';
           return {btn: b ? b.innerText.trim() : '', streak: streak};
