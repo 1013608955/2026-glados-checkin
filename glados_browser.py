@@ -195,7 +195,11 @@ def checkin(cookie, timeout=90):
             .find(e => /Checkin/.test(e.innerText || ''));
           return b ? b.innerText.trim() : '';
         })()""") or ''
-        if 'Got' in btn_text and 'Point' in btn_text:
+        # 已签到的按钮文案有两种实测形态：
+        #   · "Checkin! Got 2 Points"（本机英文版）
+        #   · "Done for today"（CI 环境）
+        # 只认前者会误判成「待签到」，进而去点一个 disabled 按钮。
+        if any(k in btn_text for k in ('Got', 'Done for today', 'Checked in')):
             return btn_text, True
 
         # 1) 点 Checkin 按钮（真实鼠标）
@@ -228,7 +232,7 @@ def checkin(cookie, timeout=90):
               const tok = (window.turnstile && turnstile.getResponse) ? turnstile.getResponse() : null;
               return {btn: b ? b.innerText.trim() : '', rect: rect, token: !!tok};
             })()""") or {}
-            if 'Got' in state.get('btn', ''):
+            if any(k in state.get('btn', '') for k in ('Got', 'Done for today', 'Checked in')):
                 return state['btn'], True
             if state.get('token'):
                 # token 已就绪，通常页面会自动继续；再点一次按钮兜底
@@ -253,7 +257,7 @@ def checkin(cookie, timeout=90):
           return {btn: b ? b.innerText.trim() : '', streak: streak};
         })()""") or {}
         btn = final.get('btn', '')
-        if 'Got' in btn:
+        if any(k in btn for k in ('Got', 'Done for today', 'Checked in')):
             return btn, True
         token = js("(window.turnstile && turnstile.getResponse) ? turnstile.getResponse() : ''")
         if token:
