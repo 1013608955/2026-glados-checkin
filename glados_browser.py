@@ -150,6 +150,17 @@ def checkin(cookie, timeout=90):
                 return None
             return res.get('result', {}).get('value')
 
+        def diag():
+            """失败时留下现场：标题 / 按钮清单 / 正文片段。
+            CI 日志是唯一的排查入口，没有这些就只能看到一句「按钮为空」。"""
+            d = js("""(() => ({
+              title: document.title || '',
+              btns: Array.from(document.querySelectorAll('button'))
+                      .map(e => (e.innerText || '').trim().slice(0, 18)).filter(Boolean).slice(0, 10),
+              body: (document.body ? document.body.innerText : '').slice(0, 90).replace(/\\n/g, ' | ')
+            }))()""") or {}
+            return f"标题={d.get('title','')!r} 按钮={d.get('btns',[])} 正文={d.get('body','')!r}"
+
         send('Network.enable')
         send('Page.enable')
         send('Network.setUserAgentOverride', {'userAgent': UA, 'platform': 'Win32'})
@@ -197,7 +208,7 @@ def checkin(cookie, timeout=90):
           return {x: r.x + r.width/2, y: r.y + r.height/2, text: b.innerText};
         })()""")
         if not box:
-            return f'找不到签到按钮（当前按钮：{btn_text}）', False
+            return f'找不到签到按钮（{diag()}）', False
         _click_at(send, box['x'], box['y'])
 
         # 2) 等 Turnstile 交互框出现，然后真实鼠标点它
@@ -247,7 +258,7 @@ def checkin(cookie, timeout=90):
         token = js("(window.turnstile && turnstile.getResponse) ? turnstile.getResponse() : ''")
         if token:
             return f'Turnstile 已通过但签到未确认（按钮：{btn}）', False
-        return f'Turnstile 未通过（按钮：{btn}，无 token）', False
+        return f'Turnstile 未通过（按钮：{btn}，无 token；{diag()}）', False
     except Exception as e:
         return f'{type(e).__name__}: {str(e)[:120]}', False
     finally:
